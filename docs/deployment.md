@@ -35,6 +35,11 @@ Create one Railway project/service from this repository and configure:
    live probe.
 4. One replica. Do not horizontally scale this SQLite service.
 
+If the Railway workspace reports that Backups require a paid plan, do not
+upgrade the account or begin the live cookie probe automatically. Record the
+plan limitation in PER-379 and pause for a human decision about whether to
+upgrade or amend the backup requirement.
+
 Railway supplies `PORT`; do not set it yourself. `railway.toml` uses `/healthz`
 as the deployment health check. The volume must be attached at runtime rather
 than during the image build or a pre-deploy command.
