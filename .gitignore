@@ -21,3 +21,9 @@ cookies.txt
 auth.json
 *.session.json
 config.local.yaml
+/data/
+*.sqlite
+*.sqlite3
+*.db
+extension/*.zip
+extension/*.crx
