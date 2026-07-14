@@ -177,6 +177,21 @@ def test_pairing_status_is_owner_scoped_and_never_returns_token_hash(tmp_path: P
     assert database.get_pairing_token(pairing_id, "someone-else") is None
 
 
+def test_new_pairing_expires_older_unconsumed_pairings_for_the_same_user(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    first_id = database.create_pairing_token(
+        "friend", "first-token-hash", _iso(timedelta(minutes=10))
+    )
+    second_id = database.create_pairing_token(
+        "friend", "second-token-hash", _iso(timedelta(minutes=10))
+    )
+
+    assert database.consume_pairing_token(first_id, "first-token-hash", _iso()) is None
+    assert database.consume_pairing_token(second_id, "second-token-hash", _iso()) == "friend"
+
+
 def test_session_persists_only_encrypted_payload_and_cookie_names(tmp_path: Path) -> None:
     database = _database(tmp_path)
     secret_cookie_value = "AQED-secret-cookie-value"

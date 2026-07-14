@@ -11,7 +11,6 @@ from linkedin_cli.gate_settings import GateSettings
 from linkedin_cli.gate_settings import GateSettingsError
 
 
-EXTENSION_ID = "a" * 32
 COMMIT_SHA = "c" * 40
 
 
@@ -30,7 +29,6 @@ def _settings(tmp_path: Path, **overrides: object) -> GateSettings:
         "app_session_secret": "s" * 32,
         "cookie_encryption_key": _cookie_key(),
         "public_base_url": "https://finder.example",
-        "extension_id": EXTENSION_ID,
         "app_user_id": "friend",
         "secure_cookies": True,
         "commit_sha": COMMIT_SHA,
@@ -48,7 +46,6 @@ def test_from_env_loads_and_normalizes_all_gate_settings(
     monkeypatch.setenv("APP_SESSION_SECRET", " session-secret-with-more-than-32-characters ")
     monkeypatch.setenv("COOKIE_ENCRYPTION_KEY", _cookie_key())
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://finder.example/")
-    monkeypatch.setenv("EXTENSION_ID", EXTENSION_ID)
     monkeypatch.setenv("APP_USER_ID", " invited-friend ")
     monkeypatch.setenv("APP_COMMIT_SHA", COMMIT_SHA.upper())
     monkeypatch.setenv("APP_DEPLOYMENT_ID", "deploy-1")
@@ -61,7 +58,6 @@ def test_from_env_loads_and_normalizes_all_gate_settings(
     assert settings.secure_cookies is True
     assert settings.commit_sha == COMMIT_SHA
     assert settings.deployment_id == "deploy-1"
-    assert settings.extension_origin == f"chrome-extension://{EXTENSION_ID}"
 
 
 def test_local_http_defaults_to_non_secure_cookies(
@@ -73,7 +69,6 @@ def test_local_http_defaults_to_non_secure_cookies(
     monkeypatch.setenv("APP_SESSION_SECRET", "s" * 32)
     monkeypatch.setenv("COOKIE_ENCRYPTION_KEY", _cookie_key())
     monkeypatch.setenv("PUBLIC_BASE_URL", "http://localhost:8000")
-    monkeypatch.setenv("EXTENSION_ID", EXTENSION_ID)
     monkeypatch.delenv("APP_COMMIT_SHA", raising=False)
     monkeypatch.delenv("APP_SECURE_COOKIES", raising=False)
 
@@ -89,7 +84,6 @@ def test_local_http_defaults_to_non_secure_cookies(
         ("APP_SESSION_SECRET", "", "APP_SESSION_SECRET is required"),
         ("COOKIE_ENCRYPTION_KEY", "", "COOKIE_ENCRYPTION_KEY is required"),
         ("PUBLIC_BASE_URL", "", "PUBLIC_BASE_URL is required"),
-        ("EXTENSION_ID", "", "EXTENSION_ID is required"),
     ],
 )
 def test_from_env_rejects_missing_required_values_without_echoing_other_secrets(
@@ -106,7 +100,6 @@ def test_from_env_rejects_missing_required_values_without_echoing_other_secrets(
     monkeypatch.setenv("APP_SESSION_SECRET", session_secret)
     monkeypatch.setenv("COOKIE_ENCRYPTION_KEY", cookie_key)
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://finder.example")
-    monkeypatch.setenv("EXTENSION_ID", EXTENSION_ID)
     monkeypatch.setenv("APP_COMMIT_SHA", COMMIT_SHA)
     monkeypatch.setenv(name, value)
 
@@ -143,15 +136,6 @@ def test_validate_rejects_unsafe_public_origins(
 
     with pytest.raises(GateSettingsError):
         settings.validate()
-
-
-@pytest.mark.parametrize("extension_id", ["a" * 31, "a" * 33, "q" * 32, "A" * 32])
-def test_validate_rejects_invalid_chrome_extension_ids(
-    tmp_path: Path,
-    extension_id: str,
-) -> None:
-    with pytest.raises(GateSettingsError, match="EXTENSION_ID"):
-        _settings(tmp_path, extension_id=extension_id).validate()
 
 
 def test_validate_rejects_short_session_secret_and_non_argon_password_hash(
@@ -200,7 +184,6 @@ def test_from_env_rejects_ambiguous_secure_cookie_flags(
     monkeypatch.setenv("APP_SESSION_SECRET", "s" * 32)
     monkeypatch.setenv("COOKIE_ENCRYPTION_KEY", _cookie_key())
     monkeypatch.setenv("PUBLIC_BASE_URL", "http://localhost:8000")
-    monkeypatch.setenv("EXTENSION_ID", EXTENSION_ID)
     monkeypatch.setenv("APP_SECURE_COOKIES", raw)
 
     with pytest.raises(GateSettingsError, match="must be true or false"):

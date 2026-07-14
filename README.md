@@ -9,15 +9,16 @@ The repository began as [`frizynn/linkedin-cli`](https://github.com/frizynn/link
 The conversation finder is currently stopped at its Railway authentication feasibility gate. Implemented in this gate:
 
 - Invite-passcode login with a seven-day secure application session
-- A side-loaded Manifest V3 connector with one-transfer cookie/host permissions
-- Ten-minute, single-use browser pairing
+- A downloadable, self-cleaning macOS connector that opens an isolated Chrome profile
+- Ten-minute, single-use, commit-bound connector pairing
 - AES-256-GCM cookie encryption before SQLite persistence
 - Sanitized authentication/self-profile probe history
 - Railway Docker, volume, health, readiness, and reproduction contracts
 
 Company discovery, profile enrichment, OpenRouter ranking, MCP tools, and the conversational skill are intentionally not implemented yet. They remain blocked until one encrypted session on one exact commit/extractor completes three successful authentication and self-profile probes spanning at least 24 hours and two Railway deployments. Any login/authwall, checkpoint, challenge, schema drift, non-retryable HTTP denial, or session rejection stops the gate; proxying, fingerprint evasion, and hosted-browser fallbacks are prohibited. Both failure and success are terminal until a human makes the post-gate decision.
 
-See the [Railway gate runbook](docs/deployment.md) and [private extension setup](extension/README.md).
+See the [Railway gate runbook](docs/deployment.md) for deployment and the invited
+friend's exact connection steps.
 
 ## Inherited CLI status
 

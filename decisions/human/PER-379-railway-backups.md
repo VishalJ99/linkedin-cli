@@ -22,7 +22,7 @@ retention, and deletion design.
 
 - The paid backup-plan blocker is resolved for the MVP gate.
 - The live pairing/probe may proceed after the deployed website and exact
-  side-loaded extension commit are verified.
+  downloadable connector commit are verified.
 - A volume failure may require starting the gate again with a new encrypted
   session and explicit consent.
 - PER-378, PER-380, and PER-381 remain blocked until the three-probe Railway

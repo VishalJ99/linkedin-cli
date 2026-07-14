@@ -21,7 +21,6 @@ from fastapi import Header
 from fastapi import HTTPException
 from fastapi import Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
@@ -43,6 +42,7 @@ from .gate_service import PairingError
 from .gate_service import SessionUnavailableError
 from .gate_service import SessionAlreadyConnectedError
 from .gate_settings import GateSettings
+from .mac_connector import build_connector_zip
 from .security import APP_SESSION_MAX_AGE_SECONDS
 from .security import AppSessionSigner
 from .security import InvitePassword
@@ -53,7 +53,7 @@ from .storage import Database
 
 SESSION_COOKIE = "linkedin_finder_session"
 CSRF_COOKIE = "linkedin_finder_csrf"
-SCHEMA_VERSION = "gate-2"
+SCHEMA_VERSION = "gate-3"
 EXTRACTOR_VERSION = GATE_EXTRACTOR_VERSION
 PROMPT_VERSION = "not-enabled"
 _PACKAGE_DIR = Path(__file__).parent
@@ -108,15 +108,6 @@ def create_app(
     app.state.gate_service = resolved_service
     templates = Jinja2Templates(directory=str(_PACKAGE_DIR / "templates"))
     app.mount("/static", StaticFiles(directory=str(_PACKAGE_DIR / "static")), name="static")
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=[resolved_settings.extension_origin],
-        allow_credentials=False,
-        allow_methods=["POST"],
-        allow_headers=["Authorization", "Content-Type"],
-        max_age=600,
-    )
-
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
         body_limit = _request_body_limit(request)
@@ -313,7 +304,6 @@ def create_app(
             name="dashboard.html",
             context={
                 "csrf_token": csrf_token,
-                "extension_id": resolved_settings.extension_id,
                 "gate_status": gate_status,
             },
         )
@@ -321,23 +311,31 @@ def create_app(
             _set_csrf_cookie(response, csrf_token, resolved_settings.secure_cookies)
         return response
 
-    @app.post("/api/pairings", status_code=201)
-    async def create_pairing_api(
+    @app.post("/api/connectors/macos")
+    async def download_macos_connector(
         user_id: str = Depends(csrf_protected),
-    ) -> dict[str, Any]:
+    ) -> Response:
         try:
             pairing = await run_in_threadpool(resolved_service.create_pairing, user_id)
         except GateStoppedError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from None
         except SessionAlreadyConnectedError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from None
-        return {
-            "pairing_id": pairing.id,
-            "pairing_token": pairing.token,
-            "expires_at": pairing.expires_at,
-            "api_base": resolved_settings.public_base_url,
-            "extension_id": resolved_settings.extension_id,
-        }
+        payload = await run_in_threadpool(
+            build_connector_zip,
+            api_base=resolved_settings.public_base_url,
+            pairing_id=pairing.id,
+            pairing_token=pairing.token,
+            connector_commit=resolved_settings.commit_sha,
+        )
+        return Response(
+            content=payload,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": 'attachment; filename="LinkedIn-Connector.zip"',
+                "X-Pairing-ID": pairing.id,
+            },
+        )
 
     @app.get("/api/pairings/{pairing_id}")
     async def pairing_status_api(
@@ -359,9 +357,15 @@ def create_app(
         body: PairingCompleteBody,
         request: Request,
         authorization: Optional[str] = Header(default=None),
+        x_connector_commit: Optional[str] = Header(default=None),
     ) -> dict[str, Any]:
-        if request.headers.get("origin") != resolved_settings.extension_origin:
-            raise HTTPException(status_code=403, detail="Extension origin required.")
+        if request.headers.get("origin") is not None:
+            raise HTTPException(status_code=403, detail="Browser origins are not accepted.")
+        if not x_connector_commit or not hmac.compare_digest(
+            x_connector_commit,
+            resolved_settings.commit_sha,
+        ):
+            raise HTTPException(status_code=409, detail="Connector build does not match the gate.")
         raw_token = _bearer_token(authorization)
         try:
             return await run_in_threadpool(
@@ -432,6 +436,8 @@ def _optional_user(
 
 def _request_body_limit(request: Request) -> Optional[int]:
     if request.method == "POST" and request.url.path in {"/login", "/logout"}:
+        return 4_096
+    if request.method == "POST" and request.url.path == "/api/connectors/macos":
         return 4_096
     if (
         request.method == "POST"

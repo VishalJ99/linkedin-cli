@@ -284,13 +284,24 @@ class Database:
         pairing_id = str(uuid4())
         with self._connect() as connection:
             self._ensure_user(connection, user_id)
+            now = _utc_iso()
+            connection.execute(
+                """
+                UPDATE pairing_tokens
+                SET expires_at = ?
+                WHERE user_id = ?
+                  AND consumed_at IS NULL
+                  AND expires_at > ?
+                """,
+                (now, user_id, now),
+            )
             connection.execute(
                 """
                 INSERT INTO pairing_tokens (
                     id, user_id, token_hash, expires_at, consumed_at, created_at
                 ) VALUES (?, ?, ?, ?, NULL, ?)
                 """,
-                (pairing_id, user_id, token_hash, _utc_iso(expires_at), _utc_iso()),
+                (pairing_id, user_id, token_hash, _utc_iso(expires_at), now),
             )
         return pairing_id
 

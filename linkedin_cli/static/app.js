@@ -5,16 +5,14 @@
   if (!dashboard) return;
 
   const csrfToken = dashboard.dataset.csrfToken;
-  const extensionId = dashboard.dataset.extensionId;
   const gateState = dashboard.dataset.gateState;
   const connected = dashboard.dataset.connected === "true";
   const statusNode = dashboard.querySelector("[data-action-status]");
-  const connectButton = dashboard.querySelector("[data-connect]");
+  const downloadButton = dashboard.querySelector("[data-download-connector]");
   const probeButton = dashboard.querySelector("[data-probe]");
   const disconnectButton = dashboard.querySelector("[data-disconnect]");
   const deleteButton = dashboard.querySelector("[data-delete]");
-  let preparedPairing = null;
-  let pairingPreparation = null;
+  let automaticProbeStarted = false;
 
   const setStatus = (message) => {
     statusNode.textContent = message;
@@ -33,76 +31,72 @@
     return payload;
   };
 
-  const sendExtensionMessage = (message) => new Promise((resolve, reject) => {
-    if (!window.chrome || !chrome.runtime || !chrome.runtime.sendMessage) {
-      reject(new Error("The private Chrome extension is not available in this browser."));
-      return;
-    }
-    chrome.runtime.sendMessage(extensionId, message, (response) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error("The private Chrome extension could not be reached."));
-        return;
-      }
-      if (!response || response.ok !== true) {
-        reject(new Error(response && response.error ? response.error : "LinkedIn connection failed."));
-        return;
-      }
-      resolve(response);
-    });
+  const wait = (milliseconds) => new Promise((resolve) => {
+    window.setTimeout(resolve, milliseconds);
   });
 
-  const preparePairing = () => {
-    if (["passed", "rejected", "retry_exhausted"].includes(gateState) || connected || pairingPreparation) return;
-    connectButton.disabled = true;
-    connectButton.textContent = "Preparing connector…";
-    pairingPreparation = apiRequest("/api/pairings", { method: "POST" })
-      .then(async (pairing) => {
-        await sendExtensionMessage({
-          type: "CONNECTOR_READY",
-          apiBase: pairing.api_base,
-        });
-        preparedPairing = pairing;
-        connectButton.disabled = false;
-        connectButton.textContent = "Connect LinkedIn";
-      })
-      .catch((error) => {
-        setStatus(error.message || "Could not prepare the connector.");
-        connectButton.textContent = "Preparation failed";
-      })
-      .finally(() => {
-        pairingPreparation = null;
-      });
+  const pollDownloadedPairing = async (pairingId) => {
+    const deadline = Date.now() + (10 * 60 * 1000);
+    while (Date.now() < deadline) {
+      const pairing = await apiRequest(`/api/pairings/${encodeURIComponent(pairingId)}`);
+      if (pairing.state === "expired") {
+        setStatus("The connector expired. Download a fresh connector when you are ready.");
+        downloadButton.disabled = false;
+        return;
+      }
+      if (pairing.state === "completed") {
+        if (automaticProbeStarted) return;
+        automaticProbeStarted = true;
+        setStatus("LinkedIn connection encrypted. Running the first read probe once…");
+        try {
+          const result = await apiRequest("/api/linkedin/probe", { method: "POST" });
+          setStatus(result.status === "passed" ? "First probe passed." : "First probe recorded.");
+          window.location.reload();
+        } catch (error) {
+          setStatus(
+            `${error.message || "The first probe could not run."} The session is connected; use Run probe now to retry manually.`
+          );
+          probeButton.disabled = false;
+        }
+        return;
+      }
+      await wait(2000);
+    }
+    setStatus("The connector expired. Download a fresh connector when you are ready.");
+    downloadButton.disabled = false;
   };
 
-  connectButton.addEventListener("click", () => {
-    const pairing = preparedPairing;
-    if (!pairing || Date.parse(pairing.expires_at) <= Date.now() + 5000) {
-      preparedPairing = null;
-      setStatus("Preparing a fresh one-time pairing. Choose Connect again when ready.");
-      preparePairing();
-      return;
-    }
-    preparedPairing = null;
-    connectButton.disabled = true;
-    setStatus("Waiting for the private Chrome extension…");
-    // The extension message is sent synchronously inside this click handler so
-    // Chrome can enforce permissions.request() against a real user activation.
-    sendExtensionMessage({
-        type: "PAIR_LINKEDIN",
-        pairingId: pairing.pairing_id,
-        token: pairing.pairing_token,
-        apiBase: pairing.api_base,
-      })
-      .then(async () => {
-        setStatus("LinkedIn connection encrypted. Running the first read probe…");
-        const result = await apiRequest("/api/linkedin/probe", { method: "POST" });
-        setStatus(result.status === "passed" ? "First probe passed." : "First probe recorded.");
-        window.location.reload();
-      })
-      .catch((error) => {
-        setStatus(error.message || "LinkedIn connection failed.");
-        window.setTimeout(() => window.location.reload(), 1500);
+  downloadButton.addEventListener("click", async () => {
+    downloadButton.disabled = true;
+    setStatus("Preparing a ten-minute, single-use Mac connector…");
+    try {
+      const response = await fetch("/api/connectors/macos", {
+        method: "POST",
+        headers: { "X-CSRF-Token": csrfToken },
       });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({ detail: "Download failed." }));
+        throw new Error(typeof payload.detail === "string" ? payload.detail : "Download failed.");
+      }
+      const pairingId = response.headers.get("X-Pairing-ID");
+      if (!pairingId) throw new Error("The connector download was incomplete.");
+      const connector = await response.blob();
+      const downloadUrl = URL.createObjectURL(connector);
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = "LinkedIn-Connector.zip";
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+      setStatus(
+        "Downloaded. Extract the ZIP, open Connect LinkedIn.command, and sign into the temporary Chrome profile."
+      );
+      await pollDownloadedPairing(pairingId);
+    } catch (error) {
+      setStatus(error.message || "Could not download the Mac connector.");
+      downloadButton.disabled = false;
+    }
   });
 
   probeButton.addEventListener("click", async () => {
@@ -145,6 +139,4 @@
       deleteButton.disabled = false;
     }
   });
-
-  preparePairing();
 })();

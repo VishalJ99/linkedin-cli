@@ -28,7 +28,7 @@ def test_docker_build_context_excludes_private_runtime_material() -> None:
     dockerignore = _read(".dockerignore")
 
     assert "COPY . " not in dockerfile
-    for pattern in (".env", "data/", "*.sqlite3", "*.key", "extension/*.zip"):
+    for pattern in (".env", "data/", "*.sqlite3", "*.key", "LinkedIn-Connector*.zip"):
         assert pattern in dockerignore
 
     secret_assignments = (
@@ -63,7 +63,7 @@ def test_runbook_defines_volume_readiness_and_strict_gate() -> None:
         "/app/data/reproduction.txt",
         "/healthz",
         "/readyz",
-        "Daily backups",
+        "No managed backups",
         "at least 24 hours apart",
         "friend's own LinkedIn profile",
         "Immediate stop rule",

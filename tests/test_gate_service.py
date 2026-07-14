@@ -51,7 +51,6 @@ def _settings(
         app_session_secret="s" * 32,
         cookie_encryption_key=base64.urlsafe_b64encode(b"k" * 32).decode("ascii"),
         public_base_url="https://finder.example",
-        extension_id="a" * 32,
         app_user_id="friend",
         secure_cookies=True,
         deployment_id=deployment_id,
@@ -271,7 +270,7 @@ def test_complete_pairing_encrypts_at_rest_then_explicit_probe_uses_session(
         },
     }
     assert captured == {
-        "source": "extension",
+        "source": "mac-connector",
         "li_at": SECRET_LI_AT,
         "jsessionid": "ajax:DO-NOT-PERSIST-JSESSION",
         "proxy": None,

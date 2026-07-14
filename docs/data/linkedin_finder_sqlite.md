@@ -8,7 +8,7 @@ PER-379 introduces the minimum tables needed to decide whether a consented brows
 
 - `schema_migrations`: applied application migrations.
 - `users`: the single invited application identity and revocable app-session generation.
-- `pairing_tokens`: hashed, single-use, ten-minute extension handoffs.
+- `pairing_tokens`: hashed, single-use, ten-minute macOS connector handoffs.
 - `linkedin_sessions`: AES-256-GCM ciphertext and non-secret validation metadata.
 - `auth_probes`: sanitized auth/profile outcomes tied to one encrypted-session ID,
   Railway deployment ID, exact Git commit, extractor version, and timestamp.

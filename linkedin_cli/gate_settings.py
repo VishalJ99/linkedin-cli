@@ -15,7 +15,6 @@ from .security import CookieCipher
 from .security import SecurityConfigurationError
 
 
-_EXTENSION_ID_PATTERN = re.compile(r"^[a-p]{32}$")
 _DEPLOYMENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _COMMIT_SHA_PATTERN = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "testserver"}
@@ -34,7 +33,6 @@ class GateSettings:
     app_session_secret: str
     cookie_encryption_key: str
     public_base_url: str
-    extension_id: str
     app_user_id: str = "friend"
     secure_cookies: bool = True
     deployment_id: str = "local"
@@ -52,7 +50,6 @@ class GateSettings:
             app_session_secret=_required_env("APP_SESSION_SECRET"),
             cookie_encryption_key=_required_env("COOKIE_ENCRYPTION_KEY"),
             public_base_url=public_base_url,
-            extension_id=_required_env("EXTENSION_ID"),
             app_user_id=os.getenv("APP_USER_ID", "friend").strip() or "friend",
             secure_cookies=_env_bool("APP_SECURE_COOKIES", secure_default),
             deployment_id=(
@@ -88,8 +85,6 @@ class GateSettings:
             CookieCipher.from_encoded_key(self.cookie_encryption_key)
         except SecurityConfigurationError:
             raise GateSettingsError("COOKIE_ENCRYPTION_KEY must encode exactly 32 bytes.") from None
-        if not _EXTENSION_ID_PATTERN.fullmatch(self.extension_id):
-            raise GateSettingsError("EXTENSION_ID must be a 32-character Chrome extension ID.")
         if not self.app_user_id:
             raise GateSettingsError("APP_USER_ID must not be empty.")
         if not _DEPLOYMENT_ID_PATTERN.fullmatch(self.deployment_id):
@@ -104,11 +99,6 @@ class GateSettings:
             raise GateSettingsError("PUBLIC_BASE_URL must use HTTPS outside local development.")
         if parsed.scheme == "https" and not self.secure_cookies:
             raise GateSettingsError("Secure cookies cannot be disabled for an HTTPS deployment.")
-
-    @property
-    def extension_origin(self) -> str:
-        return f"chrome-extension://{self.extension_id}"
-
 
 def _required_env(name: str) -> str:
     value = os.getenv(name, "").strip()

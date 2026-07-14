@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
+from io import BytesIO
+import json
 from pathlib import Path
+import re
 from typing import Any
+from zipfile import ZipFile
 
 from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
@@ -18,14 +22,11 @@ from linkedin_cli.config import RuntimeConfig
 from linkedin_cli.gate_service import GateService
 from linkedin_cli.gate_service import MAX_COOKIE_PAYLOAD_BYTES
 from linkedin_cli.gate_settings import GateSettings
+from linkedin_cli.mac_connector import CONNECTOR_FILENAME
 from linkedin_cli.storage import Database
 from linkedin_cli.web import CSRF_COOKIE
 from linkedin_cli.web import SESSION_COOKIE
 from linkedin_cli.web import create_app
-
-
-EXTENSION_ID = "a" * 32
-EXTENSION_ORIGIN = f"chrome-extension://{EXTENSION_ID}"
 COMMIT_SHA = "c" * 40
 SECRET_LI_AT = "AQED-WEB-COOKIE-MUST-STAY-SECRET"
 SECRET_JSESSION = '"ajax:WEB-COOKIE-MUST-STAY-SECRET"'
@@ -96,7 +97,6 @@ def web_harness(tmp_path: Path):
         app_session_secret="s" * 32,
         cookie_encryption_key=base64.urlsafe_b64encode(b"k" * 32).decode("ascii"),
         public_base_url="https://finder.example",
-        extension_id=EXTENSION_ID,
         app_user_id="friend",
         secure_cookies=True,
         deployment_id="deploy-web-1",
@@ -131,9 +131,9 @@ def _login(client: TestClient) -> str:
 
 
 def _create_pairing(client: TestClient, csrf_token: str) -> dict[str, Any]:
-    response = client.post("/api/pairings", headers={"X-CSRF-Token": csrf_token})
-    assert response.status_code == 201
-    return response.json()
+    response = _download_connector(client, csrf_token)
+    assert response.status_code == 200
+    return _connector_config(response)
 
 
 def _complete_pairing(client: TestClient, pairing: dict[str, Any]):
@@ -141,10 +141,25 @@ def _complete_pairing(client: TestClient, pairing: dict[str, Any]):
         f"/api/pairings/{pairing['pairing_id']}/complete",
         headers={
             "Authorization": f"Bearer {pairing['pairing_token']}",
-            "Origin": EXTENSION_ORIGIN,
+            "X-Connector-Commit": pairing["connector_commit"],
         },
         json={"cookies": _cookies()},
     )
+
+
+def _download_connector(client: TestClient, csrf_token: str):
+    return client.post(
+        "/api/connectors/macos",
+        headers={"X-CSRF-Token": csrf_token},
+    )
+
+
+def _connector_config(response) -> dict[str, str]:
+    with ZipFile(BytesIO(response.content)) as archive:
+        source = archive.read(CONNECTOR_FILENAME).decode("utf-8")
+    matched = re.search(r"^CONNECTOR_CONFIG = (\{.*\})$", source, re.MULTILINE)
+    assert matched is not None
+    return json.loads(matched.group(1))
 
 
 def test_login_issues_seven_day_secure_httponly_lax_session(web_harness: WebHarness) -> None:
@@ -199,15 +214,21 @@ def test_authenticated_writes_require_matching_double_submit_csrf(
     client = web_harness.client
     csrf_token = _login(client)
 
-    assert client.post("/api/pairings").status_code == 403
-    assert client.post("/api/pairings", headers={"X-CSRF-Token": "wrong-token"}).status_code == 403
-    assert client.post("/api/pairings", headers={"X-CSRF-Token": csrf_token}).status_code == 201
+    assert client.post("/api/connectors/macos").status_code == 403
+    assert (
+        client.post(
+            "/api/connectors/macos",
+            headers={"X-CSRF-Token": "wrong-token"},
+        ).status_code
+        == 403
+    )
+    assert _download_connector(client, csrf_token).status_code == 200
 
     unauthenticated = TestClient(client.app, base_url="https://finder.example")
     assert unauthenticated.get("/api/linkedin/status").status_code == 401
 
 
-def test_extension_completion_requires_exact_origin_and_bearer_then_is_single_use(
+def test_connector_completion_requires_exact_commit_and_bearer_then_is_single_use(
     web_harness: WebHarness,
 ) -> None:
     client = web_harness.client
@@ -215,26 +236,29 @@ def test_extension_completion_requires_exact_origin_and_bearer_then_is_single_us
     pairing = _create_pairing(client, csrf_token)
     endpoint = f"/api/pairings/{pairing['pairing_id']}/complete"
 
-    wrong_origin = client.post(
+    wrong_commit = client.post(
         endpoint,
         headers={
             "Authorization": f"Bearer {pairing['pairing_token']}",
-            "Origin": "chrome-extension://" + "b" * 32,
+            "X-Connector-Commit": "d" * 40,
         },
         json={"cookies": _cookies()},
     )
-    assert wrong_origin.status_code == 403
+    assert wrong_commit.status_code == 409
 
     missing_bearer = client.post(
         endpoint,
-        headers={"Origin": EXTENSION_ORIGIN},
+        headers={"X-Connector-Commit": pairing["connector_commit"]},
         json={"cookies": _cookies()},
     )
     assert missing_bearer.status_code == 401
 
     wrong_bearer = client.post(
         endpoint,
-        headers={"Origin": EXTENSION_ORIGIN, "Authorization": "Bearer wrong-token"},
+        headers={
+            "X-Connector-Commit": pairing["connector_commit"],
+            "Authorization": "Bearer wrong-token",
+        },
         json={"cookies": _cookies()},
     )
     assert wrong_bearer.status_code == 401
@@ -250,9 +274,8 @@ def test_extension_completion_requires_exact_origin_and_bearer_then_is_single_us
     assert first_probe.status_code == 200
     assert first_probe.json()["public_id"] == "ada-friend"
     assert pairing["api_base"] == "https://finder.example"
-    assert pairing["extension_id"] == EXTENSION_ID
     replacement = client.post(
-        "/api/pairings",
+        "/api/connectors/macos",
         headers={"X-CSRF-Token": csrf_token},
     )
     assert replacement.status_code == 409
@@ -265,29 +288,98 @@ def test_extension_completion_requires_exact_origin_and_bearer_then_is_single_us
     assert pairing_status.json()["state"] == "completed"
 
 
-def test_extension_cors_is_limited_to_the_configured_origin(web_harness: WebHarness) -> None:
+def test_mac_connector_download_is_authenticated_csrf_protected_and_token_bound(
+    web_harness: WebHarness,
+) -> None:
     client = web_harness.client
 
-    allowed = client.options(
-        "/api/pairings/synthetic/complete",
-        headers={
-            "Origin": EXTENSION_ORIGIN,
-            "Access-Control-Request-Method": "POST",
-            "Access-Control-Request-Headers": "authorization,content-type",
-        },
+    assert client.post("/api/connectors/macos").status_code == 401
+    csrf_token = _login(client)
+    assert client.post("/api/connectors/macos").status_code == 403
+
+    response = _download_connector(client, csrf_token)
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    assert response.headers["content-disposition"] == (
+        'attachment; filename="LinkedIn-Connector.zip"'
     )
-    denied = client.options(
-        "/api/pairings/synthetic/complete",
-        headers={
-            "Origin": "https://attacker.example",
-            "Access-Control-Request-Method": "POST",
-        },
+    pairing_id = response.headers["x-pairing-id"]
+    assert pairing_id
+    assert "pairing_token" not in response.headers
+    config = _connector_config(response)
+    assert config == {
+        "api_base": "https://finder.example",
+        "connector_commit": COMMIT_SHA,
+        "pairing_id": pairing_id,
+        "pairing_token": config["pairing_token"],
+    }
+    assert len(config["pairing_token"]) >= 32
+    assert client.get(f"/api/pairings/{pairing_id}").json()["state"] == "waiting"
+    assert (
+        client.post("/api/pairings", headers={"X-CSRF-Token": csrf_token}).status_code
+        == 404
     )
 
-    assert allowed.status_code == 200
-    assert allowed.headers["access-control-allow-origin"] == EXTENSION_ORIGIN
-    assert denied.status_code == 400
-    assert "access-control-allow-origin" not in denied.headers
+
+def test_new_connector_download_expires_the_older_unused_package(
+    web_harness: WebHarness,
+) -> None:
+    client = web_harness.client
+    csrf_token = _login(client)
+    first = _connector_config(_download_connector(client, csrf_token))
+    second = _connector_config(_download_connector(client, csrf_token))
+
+    assert first["pairing_id"] != second["pairing_id"]
+    assert client.get(f"/api/pairings/{first['pairing_id']}").json()["state"] == "expired"
+    assert _complete_pairing(client, first).status_code == 401
+    assert _complete_pairing(client, second).status_code == 200
+
+
+def test_mac_connector_completion_rejects_browser_origins_and_is_single_use(
+    web_harness: WebHarness,
+) -> None:
+    client = web_harness.client
+    response = _download_connector(client, _login(client))
+    config = _connector_config(response)
+    endpoint = f"/api/pairings/{config['pairing_id']}/complete"
+    headers = {
+        "Authorization": f"Bearer {config['pairing_token']}",
+        "X-Connector-Commit": config["connector_commit"],
+    }
+
+    browser_request = client.post(
+        endpoint,
+        headers={**headers, "Origin": "https://finder.example"},
+        json={"cookies": _cookies()},
+    )
+    assert browser_request.status_code == 403
+
+    completed = client.post(endpoint, headers=headers, json={"cookies": _cookies()})
+    assert completed.status_code == 200
+    assert completed.json() == {"connected": True, "probe_pending": True}
+    assert SECRET_LI_AT not in completed.text
+    assert SECRET_JSESSION not in completed.text
+
+    reused = client.post(endpoint, headers=headers, json={"cookies": _cookies()})
+    assert reused.status_code == 401
+
+
+def test_dashboard_offers_mac_download_without_extension_bootstrap(
+    web_harness: WebHarness,
+) -> None:
+    client = web_harness.client
+    _login(client)
+
+    dashboard = client.get("/")
+
+    assert "Download Mac connector" in dashboard.text
+    assert "temporary Chrome profile" in dashboard.text
+    assert "Chrome extension" not in dashboard.text
+    assert "data-extension-id" not in dashboard.text
+    javascript = client.get("/static/app.js").text
+    assert "chrome.runtime" not in javascript
+    assert "PAIR_LINKEDIN" not in javascript
 
 
 def test_malformed_cookie_payload_is_redacted_and_does_not_consume_pairing(
@@ -298,8 +390,8 @@ def test_malformed_cookie_payload_is_redacted_and_does_not_consume_pairing(
     pairing = _create_pairing(client, _login(client))
     endpoint = f"/api/pairings/{pairing['pairing_id']}/complete"
     headers = {
-        "Origin": EXTENSION_ORIGIN,
         "Authorization": f"Bearer {pairing['pairing_token']}",
+        "X-Connector-Commit": pairing["connector_commit"],
     }
     leaked_value = "COOKIE-VALUE-MUST-NEVER-ECHO"
 
@@ -550,7 +642,13 @@ def test_terminal_gate_disables_page_and_rejects_every_live_action(
     assert "Gate stopped" in dashboard.text
     assert "Sanitized reason: checkpoint" in dashboard.text
     assert "Railway deployments" in dashboard.text
-    assert client.post("/api/pairings", headers={"X-CSRF-Token": csrf_token}).status_code == 409
+    assert (
+        client.post(
+            "/api/connectors/macos",
+            headers={"X-CSRF-Token": csrf_token},
+        ).status_code
+        == 409
+    )
     assert (
         client.post("/api/linkedin/probe", headers={"X-CSRF-Token": csrf_token}).status_code == 409
     )

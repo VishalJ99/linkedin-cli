@@ -160,6 +160,11 @@ input[type="password"] {
   font-size: 0.9rem;
 }
 
+.supporting-text {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .button {
   min-height: 2.75rem;
   min-width: 2.75rem;

@@ -21,8 +21,8 @@ the gate passes exactly as defined below.
   cookies, passcodes, keys, tokens, or their hashes.
 
 The Docker build installs the exact `uv.lock` resolution with `uv sync
---frozen`. Local `.env` files, databases, keys, and packaged extensions are
-excluded from its build context and are not copied into the image.
+--frozen`. Local `.env` files, databases, keys, and downloaded connector
+packages are excluded from its build context and are not copied into the image.
 
 ## Railway resources
 
@@ -30,15 +30,10 @@ Create one Railway project/service from this repository and configure:
 
 1. A persistent volume mounted at exactly `/app/data`.
 2. A public HTTPS domain for the service.
-3. Daily backups in the volume's **Backups** settings. This is a manual
-   Railway dashboard step; verify that a backup schedule is shown before the
-   live probe.
+3. No managed backups for this one-friend feasibility gate. The user accepted
+   the volume-loss risk in `decisions/human/PER-379-railway-backups.md` rather
+   than upgrading the Railway plan. Do not create an ad hoc database export.
 4. One replica. Do not horizontally scale this SQLite service.
-
-If the Railway workspace reports that Backups require a paid plan, do not
-upgrade the account or begin the live cookie probe automatically. Record the
-plan limitation in PER-379 and pause for a human decision about whether to
-upgrade or amend the backup requirement.
 
 Railway supplies `PORT`; do not set it yourself. `railway.toml` uses `/healthz`
 as the deployment health check. The volume must be attached at runtime rather
@@ -56,7 +51,6 @@ comments, or logs.
 | `APP_SESSION_SECRET` | Independent high-entropy secret used to sign seven-day app sessions. |
 | `COOKIE_ENCRYPTION_KEY` | URL-safe base64 encoding of exactly 32 random bytes for AES-256-GCM. |
 | `PUBLIC_BASE_URL` | Exact Railway HTTPS origin, without a trailing slash. |
-| `EXTENSION_ID` | `ohjgceimoldkhlncabhahccapgoolknc`, derived from the committed public manifest key. |
 | `DATABASE_PATH` | `/app/data/linkedin_finder.sqlite3` (also the image default). |
 | `APP_USER_ID` | Stable invited-user ID; use `friend` for the gate unless deliberately changed. |
 | `APP_COMMIT_SHA` | Full Git SHA from `git rev-parse HEAD`; required for CLI-upload deploys. GitHub deploys may supply `RAILWAY_GIT_COMMIT_SHA` instead. |
@@ -78,34 +72,48 @@ Do not configure `LINKEDIN_PROXY` for this service. The gate rejects that
 setting, and its HTTP transport ignores process-level proxy environment
 variables. A passing request must use Railway's own outbound network path.
 
-## Bind the extension to the audited deployment
+## Bind the macOS connector to the audited deployment
 
-Railway must assign the public domain before the live extension can be final.
-After generating that domain, replace the empty production allow-list in
-`extension/config.js` with only its exact origin. Production manifest/config
-must contain no localhost origin. Do not side-load an ad hoc edited copy. Commit and push
-that configuration, run the extension tests, and use that clean commit for
-both `APP_COMMIT_SHA` and `railway up`:
+The website builds each connector ZIP in memory from the source running on
+Railway. It embeds the exact `PUBLIC_BASE_URL`, deployed `APP_COMMIT_SHA`, and a
+new hashed, single-use pairing credential that expires in ten minutes. The raw
+credential is present only in the HTTPS response and downloaded command; there
+is no JSON token-creation endpoint, persistent server-side bundle, browser
+extension, or separate client allow-list.
+
+Commit and push a clean revision, run the connector tests, and use that exact
+revision for `APP_COMMIT_SHA` and `railway up`:
 
 ```bash
-uv run pytest -q tests/test_extension_manifest.py
-node --check extension/service-worker.js
+uv run pytest -q tests/test_mac_connector.py tests/test_web.py
+node --check linkedin_cli/static/app.js
 git status --short
-git commit -am "Bind the connector to the Railway gate origin" -m "PER-379"
+git commit -am "Ship the audited macOS connector" -m "PER-379"
 git push
 export APP_COMMIT_SHA="$(git rev-parse HEAD)"
 railway variables --set "APP_COMMIT_SHA=$APP_COMMIT_SHA" --skip-deploys
 ```
 
-The friend must side-load `extension/` from that exact clean commit. Record the
-commit and extension ID in PER-379. Chrome permission is requested during each
-explicit transfer. Cookie and LinkedIn access is removed before upload; the
-site-origin permission is removed after the encrypted-storage response, and
-worker startup clears residual scopes before accepting messages. The website
-preflights that cleanup with a non-sensitive readiness message before enabling
-Connect, then starts the first probe separately after storage. There is no
-pre-grant or background fallback. If Chrome does not accept the website-click
-activation path, record the failure and stop.
+The friend logs into the invite-protected website, clicks **Download Mac
+connector**, extracts `LinkedIn-Connector.zip`, and opens **Connect
+LinkedIn.command**. The command requires Google Chrome and Python 3. It opens a
+new temporary Chrome profile; the friend signs into LinkedIn there and presses
+Return in Terminal only after LinkedIn has loaded. If macOS blocks the first
+open, use Control-click → **Open**. Do not weaken Gatekeeper globally.
+
+The connector reads only the applicable LinkedIn cookies through Chrome's
+loopback DevTools endpoint, posts them directly to the exact Railway origin
+without using proxy environment variables or redirects, and never displays or
+copies a cookie. It closes its owned Chrome process and deletes the temporary
+profile and extracted command on exit. The original ZIP remains in Downloads;
+delete it manually after use. Its embedded token becomes unusable after one
+successful transfer, after ten minutes, or when a newer connector is
+downloaded.
+
+The authenticated website polls only the non-secret pairing status. After
+encrypted storage succeeds, it starts the first probe exactly once. A failed
+automatic probe is not automatically retried; the UI enables the explicit
+manual probe action. A connector build from a different commit is rejected.
 
 ## Deploy and smoke-test
 
@@ -130,8 +138,8 @@ curl --fail --silent --show-error "$BASE_URL/readyz"
 
 Both requests must return a success status. Confirm in Railway that the service
 has one replica and the volume is mounted at `/app/data`. Log in through the
-website, perform the explicit one-click extension pairing, and confirm that the
-UI reports an encrypted LinkedIn session. Inspect application logs only for
+website, perform the explicit downloaded-connector pairing, and confirm that
+the UI reports an encrypted LinkedIn session. Inspect application logs only for
 sanitized status records; cookie names may appear, but cookie values, pairing
 tokens, app sessions, passcodes, encryption keys, and database ciphertext must
 not.
@@ -188,10 +196,9 @@ three retries after an initial failure; the third failure permanently stops
 the gate. They never count as successful probes.
 
 `Delete my data` securely removes live user, pairing, session, and probe rows,
-but retains the non-PII stop tombstone. Railway-managed backups are outside the
-web application's reach; honor a complete deletion request by removing the
-relevant backups or project according to the configured Railway retention
-controls.
+but retains the non-PII stop tombstone. This gate has no Railway-managed backup;
+if backups are enabled later, they are outside the web application's reach and
+must be removed separately to honor a complete deletion request.
 
 Only after all three qualifying probes pass may the user explicitly authorize
 resuming the blocked tickets and the consented `20 / 5 / 2` collection test.

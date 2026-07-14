@@ -57,7 +57,7 @@ class PairingError(ValueError):
 
 
 class CookieJarError(ValueError):
-    """Raised when an extension payload is not a safe LinkedIn cookie jar."""
+    """Raised when a connector payload is not a safe LinkedIn cookie jar."""
 
 
 class SessionUnavailableError(RuntimeError):
@@ -201,7 +201,7 @@ class GateService:
         cookies = self._cipher.decrypt(envelope, aad=row["aad"])
         session = auth_session_from_cookie_records(
             cookies,
-            source="extension",
+            source="mac-connector",
             proxy=None,
         )
         try:

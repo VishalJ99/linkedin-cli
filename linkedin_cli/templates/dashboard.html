@@ -10,7 +10,6 @@
   <div
     class="dashboard"
     data-dashboard
-    data-extension-id="{{ extension_id }}"
     data-csrf-token="{{ csrf_token }}"
     data-gate-state="{{ gate_status.gate_state }}"
     data-connected="{{ 'true' if gate_status.connected else 'false' }}"
@@ -79,12 +78,23 @@
     <div class="two-column">
       <section class="card" aria-labelledby="connect-title">
         <p class="step-number" aria-hidden="true">1</p>
-        <h2 id="connect-title">Connect from Chrome</h2>
+        <h2 id="connect-title">Connect from your Mac</h2>
         <p>
-          Open this page in the Chrome profile that is already signed into LinkedIn, with the
-          private extension installed. The cookie jar is read once only when you press this button.
+          Download the one-time connector, extract the ZIP, and double-click
+          <strong>Connect LinkedIn.command</strong>. It opens a temporary Chrome profile where you
+          sign into LinkedIn, then transfers the session directly without displaying or copying it.
         </p>
-        <button class="button button-primary" type="button" data-connect disabled>
+        <p class="supporting-text">
+          Requires Google Chrome and Python 3 on macOS. If macOS warns on first open, use
+          Control-click → Open. The connector and its login profile delete themselves after use;
+          the original ZIP remains in Downloads but its token expires after ten minutes.
+        </p>
+        <button
+          class="button button-primary"
+          type="button"
+          data-download-connector
+          {% if gate_status.connected or gate_status.gate_state in ["passed", "rejected", "retry_exhausted"] %}disabled{% endif %}
+        >
           {% if gate_status.gate_state == "passed" %}
             Gate complete
           {% elif gate_status.gate_state in ["rejected", "retry_exhausted"] %}
@@ -92,7 +102,7 @@
           {% elif gate_status.connected %}
             Session connected
           {% else %}
-            Preparing connector…
+            Download Mac connector
           {% endif %}
         </button>
       </section>
@@ -121,8 +131,8 @@
       <p>
         Disconnect deletes the encrypted LinkedIn cookie jar. Delete my data removes the user,
         pairing history, encrypted session, and sanitized probe records from the live database.
-        The non-personal stop marker and Railway-managed backups follow the retention policy
-        described by the site owner.
+        The non-personal stop marker remains so a rejected gate cannot be restarted by deleting
+        evidence. This feasibility gate does not have a managed backup.
       </p>
       <div class="button-row">
         <button class="button button-secondary" type="button" data-disconnect>Disconnect</button>
