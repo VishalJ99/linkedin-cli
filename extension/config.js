@@ -7,5 +7,7 @@
  * this exact allow-list is what permits the service worker to read cookies.
  */
 globalThis.LINKEDIN_CONNECTOR_CONFIG = Object.freeze({
-  allowedApiOrigins: Object.freeze([])
+  allowedApiOrigins: Object.freeze([
+    "https://linkedin-conversation-finder-production.up.railway.app"
+  ])
 });

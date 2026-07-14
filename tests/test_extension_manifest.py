@@ -58,7 +58,11 @@ def test_external_and_optional_origins_are_narrowly_scoped() -> None:
     }
     assert all(origin.startswith("https://") for origin in optional_origins)
     production_config = (EXTENSION / "config.js").read_text()
-    assert "allowedApiOrigins: Object.freeze([])" in production_config
+    assert (
+        "allowedApiOrigins: Object.freeze([\n"
+        '    "https://linkedin-conversation-finder-production.up.railway.app"\n'
+        "  ])"
+    ) in production_config
     assert "localhost" not in production_config.split("globalThis.", 1)[1]
 
 
