@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Sign in · LinkedIn Conversation Finder{% endblock %}
+{% block content %}
+  <section class="auth-card" aria-labelledby="login-title">
+    <p class="eyebrow">Private preview</p>
+    <h1 id="login-title">Find better people to learn from.</h1>
+    <p class="lede">
+      This one-person preview is for career-exploration conversations. It does not send messages
+      or automate outreach.
+    </p>
+    {% if error %}
+      <div class="notice notice-error" role="alert">{{ error }}</div>
+    {% endif %}
+    <form class="stack" method="post" action="/login">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="passcode">Invite passcode</label>
+      <input
+        id="passcode"
+        name="passcode"
+        type="password"
+        autocomplete="current-password"
+        required
+        autofocus
+        aria-describedby="passcode-help"
+      >
+      <p id="passcode-help" class="field-help">Use the passcode provided by the site owner.</p>
+      <button class="button button-primary" type="submit">Continue</button>
+    </form>
+  </section>
+{% endblock %}

@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}Connection gate · LinkedIn Conversation Finder{% endblock %}
+{% block header_actions %}
+  <form method="post" action="/logout">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="button button-quiet" type="submit">Sign out</button>
+  </form>
+{% endblock %}
+{% block content %}
+  <div
+    class="dashboard"
+    data-dashboard
+    data-extension-id="{{ extension_id }}"
+    data-csrf-token="{{ csrf_token }}"
+    data-gate-state="{{ gate_status.gate_state }}"
+    data-connected="{{ 'true' if gate_status.connected else 'false' }}"
+  >
+    <section class="hero" aria-labelledby="page-title">
+      <p class="eyebrow">Feasibility gate · PER-379</p>
+      <h1 id="page-title">Connect one consented LinkedIn session.</h1>
+      <p class="lede">
+        Before profile discovery is built, this gate verifies that Railway can make three
+        authenticated reads across 24 hours. Any LinkedIn login, checkpoint, challenge, or
+        rejection stops the project for review.
+      </p>
+    </section>
+
+    <div class="notice notice-warning" role="note">
+      <strong>Account-risk notice.</strong>
+      This uses an unofficial private-cookie interface. LinkedIn may restrict the account.
+      There is no proxying, challenge bypass, or automated outreach.
+    </div>
+
+    <section class="card" aria-labelledby="status-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Current state</p>
+          <h2 id="status-title">Authentication gate</h2>
+        </div>
+        <span class="status-pill status-{{ gate_status.gate_state }}" data-gate-state>
+          {{ gate_status.gate_state | replace('_', ' ') }}
+        </span>
+      </div>
+      <dl class="status-grid">
+        <div>
+          <dt>Encrypted session</dt>
+          <dd data-connected>{{ "Connected" if gate_status.connected else "Not connected" }}</dd>
+        </div>
+        <div>
+          <dt>Successful probes</dt>
+          <dd data-probe-count>{{ gate_status.successful_probes }} of {{ gate_status.required_probes }}</dd>
+        </div>
+        <div>
+          <dt>Required window</dt>
+          <dd>{{ gate_status.required_window_hours }} hours</dd>
+        </div>
+        <div>
+          <dt>Railway deployments</dt>
+          <dd>{{ gate_status.observed_deployments }} of {{ gate_status.required_deployments }}</dd>
+        </div>
+      </dl>
+      {% if gate_status.stop_reason %}
+        <div class="notice notice-error" role="alert">
+          <strong>Gate stopped.</strong> Sanitized reason: {{ gate_status.stop_reason }}.
+          No further LinkedIn requests are enabled.
+        </div>
+      {% endif %}
+      {% if gate_status.completion_reason %}
+        <div class="notice notice-success" role="status">
+          <strong>Gate complete.</strong> Further LinkedIn requests are disabled pending the
+          explicit post-gate implementation decision.
+        </div>
+      {% endif %}
+      <p class="action-status" role="status" aria-live="polite" data-action-status>
+        Ready for an explicit action.
+      </p>
+    </section>
+
+    <div class="two-column">
+      <section class="card" aria-labelledby="connect-title">
+        <p class="step-number" aria-hidden="true">1</p>
+        <h2 id="connect-title">Connect from Chrome</h2>
+        <p>
+          Open this page in the Chrome profile that is already signed into LinkedIn, with the
+          private extension installed. The cookie jar is read once only when you press this button.
+        </p>
+        <button class="button button-primary" type="button" data-connect disabled>
+          {% if gate_status.gate_state == "passed" %}
+            Gate complete
+          {% elif gate_status.gate_state in ["rejected", "retry_exhausted"] %}
+            Gate stopped
+          {% elif gate_status.connected %}
+            Session connected
+          {% else %}
+            Preparing connector…
+          {% endif %}
+        </button>
+      </section>
+
+      <section class="card" aria-labelledby="probe-title">
+        <p class="step-number" aria-hidden="true">2</p>
+        <h2 id="probe-title">Run a read probe</h2>
+        <p>
+          The first probe runs immediately after encrypted connection storage. Run later probes
+          only at the agreed checkpoints; each reads authentication status and the account owner’s
+          profile.
+        </p>
+        <button
+          class="button button-secondary"
+          type="button"
+          data-probe
+          {% if not gate_status.connected or gate_status.gate_state in ["passed", "rejected", "retry_exhausted"] %}disabled{% endif %}
+        >
+          Run probe now
+        </button>
+      </section>
+    </div>
+
+    <section class="card danger-zone" aria-labelledby="privacy-title">
+      <h2 id="privacy-title">Privacy controls</h2>
+      <p>
+        Disconnect deletes the encrypted LinkedIn cookie jar. Delete my data removes the user,
+        pairing history, encrypted session, and sanitized probe records from the live database.
+        The non-personal stop marker and Railway-managed backups follow the retention policy
+        described by the site owner.
+      </p>
+      <div class="button-row">
+        <button class="button button-secondary" type="button" data-disconnect>Disconnect</button>
+        <button class="button button-danger" type="button" data-delete>Delete my data</button>
+      </div>
+    </section>
+  </div>
+{% endblock %}
+{% block scripts %}
+  <script src="{{ url_for('static', path='/app.js') }}" defer></script>
+{% endblock %}

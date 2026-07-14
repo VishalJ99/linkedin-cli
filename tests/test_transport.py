@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from requests import Response
 from requests.cookies import RequestsCookieJar
 
 from linkedin_cli.auth import AuthSession
 from linkedin_cli.config import load_config
+from linkedin_cli.transport import LinkedInAuthContentError
+from linkedin_cli.transport import LinkedInSchemaError
 from linkedin_cli.transport import LinkedInVoyagerTransport
 from linkedin_cli.transport import _classify_redirect
 
 
-def _response(status_code: int, *, url: str, location: str | None = None, set_cookie: str = "") -> Response:
+def _response(
+    status_code: int, *, url: str, location: str | None = None, set_cookie: str = ""
+) -> Response:
     response = Response()
     response.status_code = status_code
     response.url = url
@@ -56,6 +61,17 @@ def test_build_headers_includes_csrf_token() -> None:
     assert "cookie" not in headers
 
 
+def test_transport_disables_requests_environment_proxies() -> None:
+    config = load_config()
+    jar = RequestsCookieJar()
+    jar.set("JSESSIONID", '"ajax:123"', domain=".linkedin.com", path="/")
+    session = AuthSession(cookie_jar=jar, source="extension")
+
+    transport = LinkedInVoyagerTransport(session, config)
+
+    assert transport._session.trust_env is False
+
+
 def test_probe_marks_http_errors_unhealthy(monkeypatch) -> None:
     config = load_config()
     jar = RequestsCookieJar()
@@ -69,7 +85,9 @@ def test_probe_marks_http_errors_unhealthy(monkeypatch) -> None:
         calls["params"] = params
         calls["headers"] = headers
         calls["allow_redirects"] = allow_redirects
-        return _response(410, url="https://www.linkedin.com/voyager/api/identity/profiles/jane-doe/profileView")
+        return _response(
+            410, url="https://www.linkedin.com/voyager/api/identity/profiles/jane-doe/profileView"
+        )
 
     monkeypatch.setattr(transport, "_request", fake_request)
 
@@ -84,6 +102,117 @@ def test_probe_marks_http_errors_unhealthy(monkeypatch) -> None:
     assert calls["headers"] == {"accept": "application/vnd.linkedin.normalized+json+2.1"}
 
 
+@pytest.mark.parametrize("status_code", [401, 403, 429, 503])
+def test_profile_probe_preserves_http_error_status(monkeypatch, status_code) -> None:
+    config = load_config()
+    jar = RequestsCookieJar()
+    jar.set("JSESSIONID", '"ajax:123"', domain=".linkedin.com", path="/")
+    session = AuthSession(cookie_jar=jar, source="extension")
+    transport = LinkedInVoyagerTransport(session, config)
+    profile_url = "https://www.linkedin.com/in/jane-doe/"
+
+    def return_http_error(resource, **_kwargs):
+        assert resource == profile_url
+        return _response(status_code, url=profile_url)
+
+    monkeypatch.setattr(transport, "_request", return_http_error)
+
+    result = transport.probe_profile("jane-doe")
+
+    assert result == {
+        "ok": False,
+        "status_code": status_code,
+        "url": profile_url,
+        "reason": "http-error",
+    }
+
+
+def test_profile_probe_classifies_success_code_login_content_as_terminal(monkeypatch) -> None:
+    config = load_config()
+    jar = RequestsCookieJar()
+    jar.set("JSESSIONID", '"ajax:123"', domain=".linkedin.com", path="/")
+    transport = LinkedInVoyagerTransport(AuthSession(jar, source="extension"), config)
+    html = (
+        "<html><head><title>LinkedIn Login, Sign in | LinkedIn</title></head>"
+        '<body><form action="/uas/login-submit"></form></body></html>'
+    )
+    monkeypatch.setattr(
+        transport,
+        "_request_profile_page",
+        lambda _public_id: _html_response("https://www.linkedin.com/in/jane-doe/", html),
+    )
+
+    assert transport.probe_profile("jane-doe") == {
+        "ok": False,
+        "status_code": 200,
+        "url": "https://www.linkedin.com/in/jane-doe/",
+        "reason": "login",
+    }
+
+
+def test_profile_probe_classifies_success_code_schema_drift_as_terminal(monkeypatch) -> None:
+    config = load_config()
+    jar = RequestsCookieJar()
+    jar.set("JSESSIONID", '"ajax:123"', domain=".linkedin.com", path="/")
+    transport = LinkedInVoyagerTransport(AuthSession(jar, source="extension"), config)
+    monkeypatch.setattr(
+        transport,
+        "_request_profile_page",
+        lambda _public_id: _html_response(
+            "https://www.linkedin.com/in/jane-doe/",
+            "<html><head><title>Jane Doe | LinkedIn</title></head><body></body></html>",
+        ),
+    )
+
+    assert transport.probe_profile("jane-doe") == {
+        "ok": False,
+        "status_code": 200,
+        "reason": "profile-schema-drift",
+    }
+
+
+@pytest.mark.parametrize(
+    ("html", "exception_type", "reason"),
+    [
+        (
+            "<html><head><title>LinkedIn Login, Sign in | LinkedIn</title></head>"
+            '<body><form action="/uas/login-submit"></form></body></html>',
+            LinkedInAuthContentError,
+            "login",
+        ),
+        (
+            "<html><head><title>Unexpected response</title></head><body></body></html>",
+            LinkedInSchemaError,
+            None,
+        ),
+    ],
+)
+def test_me_read_distinguishes_terminal_auth_content_and_schema_drift(
+    monkeypatch,
+    html,
+    exception_type,
+    reason,
+) -> None:
+    config = load_config()
+    jar = RequestsCookieJar()
+    jar.set("JSESSIONID", '"ajax:123"', domain=".linkedin.com", path="/")
+    transport = LinkedInVoyagerTransport(AuthSession(jar, source="extension"), config)
+    monkeypatch.setattr(
+        transport,
+        "_request",
+        lambda *_args, **_kwargs: _html_response(
+            "https://www.linkedin.com/voyager/api/me",
+            html,
+        ),
+    )
+
+    with pytest.raises(exception_type) as exc_info:
+        transport.get_me()
+
+    if reason is not None:
+        assert exc_info.value.reason == reason
+
+
 def test_fetch_profile_parses_embedded_profile_payload(monkeypatch) -> None:
     config = load_config()
     jar = RequestsCookieJar()
@@ -91,7 +220,11 @@ def test_fetch_profile_parses_embedded_profile_payload(monkeypatch) -> None:
     session = AuthSession(cookie_jar=jar, source="env")
     transport = LinkedInVoyagerTransport(session, config)
     body = {
-        "data": {"data": {"identityDashProfilesByMemberIdentity": {"*elements": ["urn:li:fsd_profile:123"]}}},
+        "data": {
+            "data": {
+                "identityDashProfilesByMemberIdentity": {"*elements": ["urn:li:fsd_profile:123"]}
+            }
+        },
         "included": [
             {
                 "$type": "com.linkedin.voyager.dash.common.Geo",

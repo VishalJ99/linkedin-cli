@@ -37,6 +37,28 @@ class LinkedInTransportError(RuntimeError):
     """Raised when the direct Voyager transport cannot complete a request."""
 
 
+class LinkedInHTTPError(LinkedInTransportError):
+    """Raised when LinkedIn returns a non-redirect HTTP error."""
+
+    def __init__(self, status_code: int, url: str):
+        super().__init__(f"LinkedIn returned HTTP {status_code} for {url}")
+        self.status_code = status_code
+        self.url = url
+
+
+class LinkedInSchemaError(LinkedInTransportError):
+    """Raised when a successful response no longer matches the known schema."""
+
+
+class LinkedInAuthContentError(LinkedInTransportError):
+    """Raised when LinkedIn serves login/checkpoint content with a success code."""
+
+    def __init__(self, reason: str, url: str):
+        super().__init__(f"LinkedIn returned terminal {reason} content for {url}")
+        self.reason = reason
+        self.url = url
+
+
 class LinkedInRedirectError(LinkedInTransportError):
     """Raised when LinkedIn redirects instead of returning data."""
 
@@ -52,6 +74,7 @@ class LinkedInTransport:
         self._auth_session = session
         self._config = config
         self._session = requests.Session()
+        self._session.trust_env = False
         self._session.cookies.update(session.cookie_jar)
         self._session.headers.update(self._build_headers())
         if config.runtime.proxy:
@@ -86,6 +109,13 @@ class LinkedInTransport:
                 "reason": exc.details.reason,
                 "set_cookie": exc.details.set_cookie,
             }
+        except LinkedInHTTPError as exc:
+            return {
+                "ok": False,
+                "status_code": exc.status_code,
+                "url": exc.url,
+                "reason": "http-error",
+            }
         except Exception as exc:  # pragma: no cover - network-dependent
             return {"ok": False, "error": str(exc)}
         if response.status_code >= 400:
@@ -115,6 +145,26 @@ class LinkedInTransport:
                 "location": exc.details.location,
                 "reason": exc.details.reason,
                 "set_cookie": exc.details.set_cookie,
+            }
+        except LinkedInHTTPError as exc:
+            return {
+                "ok": False,
+                "status_code": exc.status_code,
+                "url": exc.url,
+                "reason": "http-error",
+            }
+        except LinkedInAuthContentError as exc:
+            return {
+                "ok": False,
+                "status_code": 200,
+                "url": exc.url,
+                "reason": exc.reason,
+            }
+        except LinkedInSchemaError:
+            return {
+                "ok": False,
+                "status_code": 200,
+                "reason": "profile-schema-drift",
             }
         except Exception as exc:  # pragma: no cover - network-dependent
             return {"ok": False, "error": str(exc)}
@@ -162,13 +212,14 @@ class LinkedInTransport:
     ) -> dict[str, Any]:
         response = self._request(resource, params=params, headers=headers, allow_redirects=False)
         if response.status_code >= 400:
-            raise LinkedInTransportError(
-                f"LinkedIn returned HTTP {response.status_code} for {response.url}"
-            )
+            raise LinkedInHTTPError(response.status_code, str(response.url))
         try:
             return response.json()
         except ValueError as exc:
-            raise LinkedInTransportError(
+            auth_reason = _classify_auth_content(BeautifulSoup(response.text, "lxml"))
+            if auth_reason:
+                raise LinkedInAuthContentError(auth_reason, str(response.url)) from exc
+            raise LinkedInSchemaError(
                 f"LinkedIn returned non-JSON content for {response.url}"
             ) from exc
 
@@ -190,13 +241,17 @@ class LinkedInTransport:
             allow_redirects=False,
         )
         if response.status_code >= 400:
-            raise LinkedInTransportError(
-                f"LinkedIn returned HTTP {response.status_code} for {response.url}"
-            )
+            raise LinkedInHTTPError(response.status_code, str(response.url))
         return response
 
     def _parse_profile_page(self, html: str, public_id: str) -> dict[str, Any]:
         soup = BeautifulSoup(html, "lxml")
+        auth_reason = _classify_auth_content(soup)
+        if auth_reason:
+            raise LinkedInAuthContentError(
+                auth_reason,
+                f"{API_BASE_URL}/in/{public_id.strip('/')}/",
+            )
         code_map = {
             tag.get("id"): tag.get_text()
             for tag in soup.find_all("code")
@@ -205,7 +260,9 @@ class LinkedInTransport:
         payload = self._find_profile_payload(code_map, public_id)
         included = payload.get("included", [])
         if not isinstance(included, list):
-            raise LinkedInTransportError("LinkedIn profile payload returned an invalid included list.")
+            raise LinkedInSchemaError(
+                "LinkedIn profile payload returned an invalid included list."
+            )
 
         entities_by_urn = {
             item.get("entityUrn"): item
@@ -222,7 +279,7 @@ class LinkedInTransport:
             None,
         )
         if profile is None:
-            raise LinkedInTransportError(
+            raise LinkedInSchemaError(
                 f"LinkedIn profile page did not contain embedded profile data for {public_id}."
             )
 
@@ -260,10 +317,10 @@ class LinkedInTransport:
             try:
                 return json.loads(body_text)
             except json.JSONDecodeError as exc:
-                raise LinkedInTransportError(
+                raise LinkedInSchemaError(
                     f"LinkedIn embedded an unreadable profile payload for {public_id}."
                 ) from exc
-        raise LinkedInTransportError(
+        raise LinkedInSchemaError(
             f"LinkedIn profile page did not expose an embedded profile payload for {public_id}."
         )
 
@@ -377,6 +434,36 @@ class LinkedInTransport:
             }
         )
         return headers
+
+
+def _classify_auth_content(soup: BeautifulSoup) -> str | None:
+    """Classify structural markers on success-code login/challenge pages."""
+    markers: list[str] = []
+    if soup.title:
+        markers.append(soup.title.get_text(" ", strip=True))
+    for tag_name in ("html", "body", "main", "form"):
+        for tag in soup.find_all(tag_name):
+            for attribute in ("id", "class", "action", "data-page-key"):
+                value = tag.get(attribute)
+                if isinstance(value, list):
+                    markers.extend(str(item) for item in value)
+                elif value:
+                    markers.append(str(value))
+    marker_text = " ".join(markers).lower()
+    if "checkpoint" in marker_text or "security verification" in marker_text:
+        return "checkpoint"
+    if "/challenge" in marker_text or "challenge-page" in marker_text:
+        return "challenge"
+    if "authwall" in marker_text:
+        return "authwall"
+    title_text = soup.title.get_text(" ", strip=True).lower() if soup.title else ""
+    if (
+        "/uas/login" in marker_text
+        or "login-submit" in marker_text
+        or ("linkedin" in title_text and ("sign in" in title_text or "log in" in title_text))
+    ):
+        return "login"
+    return None
 
 
 def _classify_redirect(response: requests.Response) -> str:

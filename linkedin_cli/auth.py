@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import os
+import re
 from typing import Any
 from typing import Iterable
 
@@ -26,6 +28,26 @@ _LINKEDIN_DOMAINS = {
     ".www.linkedin.com",
 }
 
+_COOKIE_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+_LINKEDIN_HOST_PATTERN = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*linkedin\.com$")
+_CHROME_SAME_SITE_VALUES = {
+    "no_restriction": "None",
+    "lax": "Lax",
+    "strict": "Strict",
+    "unspecified": "Unspecified",
+}
+_AUTH_STOP_REASONS = {
+    "authwall",
+    "challenge",
+    "checkpoint",
+    "empty-redirect",
+    "login",
+    "redirect",
+    "self-redirect-loop",
+    "session-rejected",
+}
+_AUTH_STOP_STATUS_CODES = {401, 403, 429}
+
 
 class AuthenticationError(RuntimeError):
     """Raised when a usable LinkedIn session cannot be resolved."""
@@ -42,11 +64,11 @@ class AuthSession:
 
     @property
     def li_at(self) -> str:
-        return self.cookie_jar.get("li_at", "")
+        return _first_cookie_value(self.cookie_jar, "li_at")
 
     @property
     def jsessionid(self) -> str:
-        return self.cookie_jar.get("JSESSIONID", "").strip('"')
+        return _first_cookie_value(self.cookie_jar, "JSESSIONID").strip('"')
 
     @property
     def cookie_string(self) -> str:
@@ -64,7 +86,7 @@ class AuthSession:
         return sorted({cookie.name for cookie in self.cookie_jar})
 
     def has_required_cookies(self) -> bool:
-        return all(self.cookie_jar.get(name) for name in COOKIE_REQUIRED_NAMES)
+        return _has_required_cookies(self.cookie_jar)
 
     def as_playwright_cookies(self) -> list[dict[str, object]]:
         cookies = []
@@ -81,6 +103,64 @@ class AuthSession:
                 }
             )
         return cookies
+
+
+def auth_session_from_cookie_records(
+    records: Any,
+    *,
+    source: str = "extension",
+    proxy: str | None = None,
+) -> AuthSession:
+    """Build an auth session from Chrome-style LinkedIn cookie records.
+
+    The function intentionally reports only record positions and field names in
+    validation errors. Cookie values remain confined to the returned cookie jar.
+    """
+    if not isinstance(records, list):
+        raise AuthenticationError("Cookie records must be a list.")
+
+    jar = RequestsCookieJar()
+    for index, record in enumerate(records):
+        if not isinstance(record, dict):
+            raise AuthenticationError(f"Cookie record {index} must be an object.")
+
+        name = record.get("name")
+        if not isinstance(name, str) or not name or not _COOKIE_NAME_PATTERN.fullmatch(name):
+            raise AuthenticationError(f"Cookie record {index} has an invalid name.")
+
+        value = record.get("value")
+        if not isinstance(value, str) or any(character in value for character in "\r\n\x00"):
+            raise AuthenticationError(f"Cookie record {index} has an invalid value.")
+
+        domain = _normalize_cookie_domain(record.get("domain"), index=index)
+        path = _normalize_cookie_path(record.get("path", "/"), index=index)
+        secure = _cookie_boolean(record, "secure", index=index, default=False)
+        http_only = _cookie_boolean(record, "httpOnly", index=index, default=False)
+        _cookie_boolean(record, "hostOnly", index=index, default=not domain.startswith("."))
+        expires = _cookie_expiry(record, index=index)
+        same_site = _cookie_same_site(record, index=index)
+
+        rest: dict[str, object] = {"SameSite": same_site}
+        if http_only:
+            rest["HttpOnly"] = True
+        jar.set_cookie(
+            create_cookie(
+                name=name,
+                value=value,
+                domain=domain,
+                path=path,
+                secure=secure,
+                expires=expires,
+                discard=expires is None,
+                rest=rest,
+            )
+        )
+
+    if not _has_required_cookies(jar):
+        raise AuthenticationError(
+            "Cookie records must include nonempty li_at and JSESSIONID cookies."
+        )
+    return AuthSession(cookie_jar=jar, source=source, proxy=proxy)
 
 
 def resolve_auth_session(config: AppConfig) -> AuthSession:
@@ -135,6 +215,9 @@ def validate_auth_session(session: AuthSession, config: AppConfig) -> dict[str, 
 def inspect_auth_session(session: AuthSession, config: AppConfig) -> dict[str, Any]:
     """Run the basic auth read without collapsing diagnostics into a generic error."""
     from .transport import LinkedInRedirectError
+    from .transport import LinkedInAuthContentError
+    from .transport import LinkedInHTTPError
+    from .transport import LinkedInSchemaError
     from .transport import LinkedInTransport
     from .transport import LinkedInTransportError
 
@@ -148,6 +231,27 @@ def inspect_auth_session(session: AuthSession, config: AppConfig) -> dict[str, A
             "status_code": exc.details.status_code,
             "location": exc.details.location,
             "url": exc.details.url,
+        }
+    except LinkedInHTTPError as exc:
+        return {
+            "ok": False,
+            "kind": "http-error",
+            "error": str(exc),
+            "status_code": exc.status_code,
+            "url": exc.url,
+        }
+    except LinkedInAuthContentError as exc:
+        return {
+            "ok": False,
+            "kind": exc.reason,
+            "status_code": 200,
+            "url": exc.url,
+        }
+    except LinkedInSchemaError:
+        return {
+            "ok": False,
+            "kind": "schema-drift",
+            "status_code": 200,
         }
     except LinkedInTransportError as exc:
         return {
@@ -211,7 +315,9 @@ def probe_read_access(
                 "kind": exc.__class__.__name__.replace("_", "-").lower(),
                 "error": str(exc),
             }
-    if public_id:
+        if _is_auth_stop(results[name]):
+            break
+    if public_id and not any(_is_auth_stop(result) for result in results.values()):
         try:
             results["voyager_profile"] = transport.probe_profile(public_id)
         except Exception as exc:  # pragma: no cover - live network behavior
@@ -220,20 +326,41 @@ def probe_read_access(
                 "kind": exc.__class__.__name__.replace("_", "-").lower(),
                 "error": str(exc),
             }
+    elif not public_id and not any(_is_auth_stop(result) for result in results.values()):
+        results["voyager_profile"] = {
+            "ok": False,
+            "kind": "missing-public-id",
+            "error": "Authenticated profile did not include a public identifier.",
+        }
     return results
 
 
 def collect_auth_diagnostics(config: AppConfig) -> dict[str, Any]:
     """Resolve the current auth session and return diagnostic details."""
     session = resolve_auth_session(config)
+    return collect_auth_diagnostics_for_session(session, config)
+
+
+def collect_auth_diagnostics_for_session(
+    session: AuthSession,
+    config: AppConfig,
+) -> dict[str, Any]:
+    """Return diagnostic details for an already resolved auth session."""
     if not session.has_required_cookies():
         raise AuthenticationError("LinkedIn session is missing required cookies.")
 
     validation = inspect_auth_session(session, config)
     payload = validation.get("payload", {}) if validation.get("ok") else {}
     public_id, full_name = _extract_identity(payload)
-    probes = probe_read_access(session, config, public_id=public_id or None)
-    probes_ok = all(result.get("ok") for result in probes.values())
+    probes = (
+        probe_read_access(session, config, public_id=public_id or None)
+        if validation.get("ok")
+        else {}
+    )
+    required_probes = {"voyager_me", "voyager_feed", "voyager_profile"}
+    probes_ok = required_probes <= probes.keys() and all(
+        bool(probes[name].get("ok")) for name in required_probes
+    )
     return {
         "ok": bool(validation.get("ok")) and probes_ok,
         "source": session.source,
@@ -254,18 +381,93 @@ def collect_auth_diagnostics(config: AppConfig) -> dict[str, Any]:
     }
 
 
+def collect_gate_diagnostics_for_session(
+    session: AuthSession,
+    config: AppConfig,
+) -> dict[str, Any]:
+    """Run only the two reads required by the Railway feasibility gate.
+
+    The inherited CLI diagnostics also probe feed access and repeat ``/me``.
+    Those reads are useful interactively but are outside the gate acceptance
+    contract and would unnecessarily expand its account-risk surface.
+    """
+    if not session.has_required_cookies():
+        raise AuthenticationError("LinkedIn session is missing required cookies.")
+
+    validation = inspect_auth_session(session, config)
+    payload = validation.get("payload", {}) if validation.get("ok") else {}
+    public_id, full_name = _extract_identity(payload)
+    probes: dict[str, dict[str, Any]] = {}
+    if validation.get("ok"):
+        if public_id:
+            from .transport import LinkedInTransport
+
+            try:
+                probes["voyager_profile"] = LinkedInTransport(
+                    session, config
+                ).probe_profile(public_id)
+            except Exception as exc:  # pragma: no cover - live network behavior
+                probes["voyager_profile"] = {
+                    "ok": False,
+                    "kind": exc.__class__.__name__.replace("_", "-").lower(),
+                    "error": str(exc),
+                }
+        else:
+            probes["voyager_profile"] = {
+                "ok": False,
+                "kind": "missing-public-id",
+                "error": "Authenticated profile did not include a public identifier.",
+            }
+    profile_probe = probes.get("voyager_profile", {})
+    return {
+        "ok": bool(validation.get("ok")) and bool(profile_probe.get("ok")),
+        "source": session.source,
+        "browser": session.browser,
+        "cookie_count": session.cookie_count,
+        "cookie_names": session.cookie_names,
+        "public_id": public_id,
+        "full_name": full_name,
+        "validation": {
+            "ok": bool(validation.get("ok")),
+            "kind": validation.get("kind", ""),
+            "error": validation.get("error", ""),
+            "status_code": validation.get("status_code"),
+            "location": validation.get("location"),
+        },
+        "probes": probes,
+        "hint": _build_auth_hint(session, validation, probes),
+    }
+
+
 def _extract_identity(payload: dict[str, Any]) -> tuple[str, str]:
-    mini_profile = payload.get("miniProfile", {}) if isinstance(payload, dict) else {}
-    public_id = (
-        mini_profile.get("publicIdentifier")
-        or payload.get("plainId")
-        or payload.get("publicIdentifier")
-        or ""
+    if not isinstance(payload, dict):
+        return "", ""
+    mini_profile = payload.get("miniProfile")
+    if not isinstance(mini_profile, dict):
+        mini_profile = {}
+    public_id = next(
+        (
+            candidate.strip()
+            for candidate in (
+                mini_profile.get("publicIdentifier"),
+                payload.get("plainId"),
+                payload.get("publicIdentifier"),
+            )
+            if isinstance(candidate, str) and candidate.strip()
+        ),
+        "",
     )
     full_name = " ".join(
-        part for part in [payload.get("firstName", ""), payload.get("lastName", "")] if part
-    ).strip()
+        part.strip()
+        for part in (payload.get("firstName"), payload.get("lastName"))
+        if isinstance(part, str) and part.strip()
+    )
     return public_id, full_name
+
+
+def _is_auth_stop(result: dict[str, Any]) -> bool:
+    reason = str(result.get("reason") or result.get("kind") or "").lower()
+    return reason in _AUTH_STOP_REASONS or result.get("status_code") in _AUTH_STOP_STATUS_CODES
 
 
 def _build_auth_hint(
@@ -412,13 +614,96 @@ def _copy_cookie(target: RequestsCookieJar, cookie) -> None:
 
 
 def _has_required_cookies(jar: RequestsCookieJar) -> bool:
-    return all(jar.get(name) for name in COOKIE_REQUIRED_NAMES)
+    return all(
+        any(
+            cookie.name == name
+            and isinstance(cookie.value, str)
+            and _required_cookie_is_nonempty(name, cookie.value)
+            for cookie in jar
+        )
+        for name in COOKIE_REQUIRED_NAMES
+    )
+
+
+def _first_cookie_value(jar: RequestsCookieJar, name: str) -> str:
+    fallback = ""
+    for cookie in jar:
+        if cookie.name == name and isinstance(cookie.value, str):
+            fallback = fallback or cookie.value
+            if _required_cookie_is_nonempty(name, cookie.value):
+                return cookie.value
+    return fallback
+
+
+def _required_cookie_is_nonempty(name: str, value: str) -> bool:
+    normalized = value.strip()
+    if name == "JSESSIONID":
+        normalized = normalized.strip('"').strip()
+    return bool(normalized)
+
+
+def _normalize_cookie_domain(value: Any, *, index: int) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise AuthenticationError(f"Cookie record {index} has an invalid domain.")
+    normalized = value.lower()
+    host = normalized[1:] if normalized.startswith(".") else normalized
+    if not _LINKEDIN_HOST_PATTERN.fullmatch(host):
+        raise AuthenticationError(f"Cookie record {index} has a non-LinkedIn domain.")
+    return normalized
+
+
+def _normalize_cookie_path(value: Any, *, index: int) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.startswith("/")
+        or any(character in value for character in "\r\n\x00")
+    ):
+        raise AuthenticationError(f"Cookie record {index} has an invalid path.")
+    return value
+
+
+def _cookie_boolean(
+    record: dict[str, Any],
+    field: str,
+    *,
+    index: int,
+    default: bool,
+) -> bool:
+    value = record.get(field, default)
+    if not isinstance(value, bool):
+        raise AuthenticationError(f"Cookie record {index} has an invalid {field} field.")
+    return value
+
+
+def _cookie_expiry(record: dict[str, Any], *, index: int) -> int | None:
+    is_session = _cookie_boolean(record, "session", index=index, default=False)
+    value = record.get("expirationDate")
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise AuthenticationError(f"Cookie record {index} has an invalid expirationDate field.")
+    if not math.isfinite(value) or value < 0:
+        raise AuthenticationError(f"Cookie record {index} has an invalid expirationDate field.")
+    if is_session:
+        return None
+    return int(value)
+
+
+def _cookie_same_site(record: dict[str, Any], *, index: int) -> str:
+    value = record.get("sameSite", "unspecified")
+    if not isinstance(value, str) or value not in _CHROME_SAME_SITE_VALUES:
+        raise AuthenticationError(f"Cookie record {index} has an invalid sameSite field.")
+    return _CHROME_SAME_SITE_VALUES[value]
 
 
 def _is_linkedin_domain(domain: str) -> bool:
-    if domain in _LINKEDIN_DOMAINS:
+    if not isinstance(domain, str) or not domain:
+        return False
+    normalized = domain.lower()
+    if normalized in _LINKEDIN_DOMAINS:
         return True
-    return domain.endswith(".linkedin.com")
+    host = normalized[1:] if normalized.startswith(".") else normalized
+    return bool(_LINKEDIN_HOST_PATTERN.fullmatch(host))
 
 
 def _parse_cookie_header(raw_header: str) -> dict[str, str]:
