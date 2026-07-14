@@ -366,6 +366,20 @@ def test_health_readiness_security_headers_and_reproduction_file(
     assert not_ready.json() == {"status": "not-ready"}
 
 
+def test_static_assets_use_origin_relative_urls(web_harness: WebHarness) -> None:
+    client = web_harness.client
+    login_page = client.get("/login")
+
+    assert 'href="/static/app.css"' in login_page.text
+    assert client.get("/static/app.css").headers["content-type"].startswith("text/css")
+
+    _login(client)
+    dashboard = client.get("/")
+
+    assert 'src="/static/app.js"' in dashboard.text
+    assert client.get("/static/app.js").headers["content-type"].startswith("text/javascript")
+
+
 def test_disconnect_removes_linkedin_session_but_keeps_app_login(
     web_harness: WebHarness,
 ) -> None:
