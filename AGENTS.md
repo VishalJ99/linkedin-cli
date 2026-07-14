@@ -6,11 +6,12 @@ This fork builds a private, Railway-hosted LinkedIn conversation-finder for one 
 
 ## Active work
 
+- Linear project: `LinkedIn Conversation Finder` (`ac6774363500`). Place every issue for this repository under this project.
 - PER-377: parent MVP
 - PER-379: Chrome connector and Railway authentication feasibility gate
 - PER-378, PER-380, PER-381: blocked until PER-379 passes three authenticated probes across 24 hours
 
-Stop after PER-379 if Railway receives a login, checkpoint, challenge, or session rejection. Record evidence in Linear; do not add proxies, fingerprint bypasses, or hosted-browser fallbacks.
+Stop after PER-379 if Railway receives a login, checkpoint, challenge, or session rejection. Record evidence in Linear; do not add proxies, fingerprint bypasses, or hosted-browser fallbacks. A pass requires one encrypted session and exact commit/extractor across three probes spanning 24 hours and at least two Railway deployment IDs; both pass and failure are terminal pending a human decision.
 
 ## Development
 
@@ -36,10 +37,10 @@ Stop after PER-379 if Railway receives a login, checkpoint, challenge, or sessio
 - Apply SQLite migrations at process startup, not build or pre-deploy time.
 - Expose `/healthz` for liveness and `/readyz` for database readiness.
 - Persist a sanitized `/app/data/reproduction.txt`; never include secrets.
+- Commit the exact production extension origin in the same revision deployed and recorded by the gate.
 
 ## Records
 
 - Record consequential architecture/security choices in `decisions/agent/pending/` for user review.
 - Update `DATA.md` when introducing durable runtime or fixture data.
 - Add a logbook entry for live Railway/LinkedIn observations; pure engineering work does not need one.
-

@@ -1,0 +1,28 @@
+.git
+.github
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.DS_Store
+
+# Configuration and secrets must be supplied by Railway at runtime.
+.env
+.env.*
+*.pem
+*.key
+
+# Private runtime state and exported extension bundles never enter the image.
+data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+extension/*.crx
+extension/*.zip
+
+build/
+dist/

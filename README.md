@@ -1,12 +1,27 @@
-# linkedin-cli
+# LinkedIn Conversation Finder
 
-`linkedin-cli` is an unofficial terminal-first CLI for reading LinkedIn data and running a small set of authenticated actions from the shell.
+This fork is building a private, Railway-hosted tool that helps one invited user find people for useful career-exploration conversations. The eventual product combines deterministic LinkedIn profile collection with evidence-backed language-model ranking. Automated outreach is out of scope.
 
-It is built around a real LinkedIn web session, not OAuth. That makes it practical for personal automation, but it also means session handling, browser behavior, and endpoint stability matter.
+The repository began as [`frizynn/linkedin-cli`](https://github.com/frizynn/linkedin-cli). Its existing terminal client remains the extraction foundation.
 
 ## Status
 
-This repository is usable today, but it is still early-stage software.
+The conversation finder is currently stopped at its Railway authentication feasibility gate. Implemented in this gate:
+
+- Invite-passcode login with a seven-day secure application session
+- A side-loaded Manifest V3 connector with one-transfer cookie/host permissions
+- Ten-minute, single-use browser pairing
+- AES-256-GCM cookie encryption before SQLite persistence
+- Sanitized authentication/self-profile probe history
+- Railway Docker, volume, health, readiness, and reproduction contracts
+
+Company discovery, profile enrichment, OpenRouter ranking, MCP tools, and the conversational skill are intentionally not implemented yet. They remain blocked until one encrypted session on one exact commit/extractor completes three successful authentication and self-profile probes spanning at least 24 hours and two Railway deployments. Any login/authwall, checkpoint, challenge, schema drift, non-retryable HTTP denial, or session rejection stops the gate; proxying, fingerprint evasion, and hosted-browser fallbacks are prohibited. Both failure and success are terminal until a human makes the post-gate decision.
+
+See the [Railway gate runbook](docs/deployment.md) and [private extension setup](extension/README.md).
+
+## Inherited CLI status
+
+The underlying CLI is early-stage software built around a real LinkedIn web session rather than OAuth.
 
 Verified end-to-end against a live authenticated session:
 - `linkedin auth-status`
@@ -53,13 +68,14 @@ Auth and runtime support:
 - LinkedIn can change internal web endpoints without notice. A command that works today may need adjustment later.
 - Session cookies are credentials. Treat them like passwords.
 - Do not use this project for spam, scraping at abusive rates, or anything that violates the platform rules that apply to your account.
+- Private-cookie automation can result in account restriction under LinkedIn's [User Agreement](https://www.linkedin.com/legal/user-agreement). The finder must never claim platform compliance or exhaustive company coverage.
 
 ## Installation
 
 ### Install from source
 
 ```bash
-git clone https://github.com/frizynn/linkedin-cli.git
+git clone https://github.com/VishalJ99/linkedin-cli.git
 cd linkedin-cli
 uv sync
 ```
