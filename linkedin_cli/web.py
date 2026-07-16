@@ -38,11 +38,9 @@ from .gate_service import GateService
 from .gate_service import GateStoppedError
 from .gate_service import GATE_EXTRACTOR_VERSION
 from .gate_service import MAX_COOKIE_PAYLOAD_BYTES
-from .gate_service import PairingError
 from .gate_service import SessionUnavailableError
 from .gate_service import SessionAlreadyConnectedError
 from .gate_settings import GateSettings
-from .mac_connector import build_connector_zip
 from .security import APP_SESSION_MAX_AGE_SECONDS
 from .security import AppSessionSigner
 from .security import InvitePassword
@@ -53,16 +51,16 @@ from .storage import Database
 
 SESSION_COOKIE = "linkedin_finder_session"
 CSRF_COOKIE = "linkedin_finder_csrf"
-SCHEMA_VERSION = "gate-3"
+SCHEMA_VERSION = "gate-4"
 EXTRACTOR_VERSION = GATE_EXTRACTOR_VERSION
 PROMPT_VERSION = "not-enabled"
 _PACKAGE_DIR = Path(__file__).parent
 
 
-class PairingCompleteBody(BaseModel):
+class CookieHeaderBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    cookies: list[dict[str, Any]] = Field(min_length=1, max_length=200)
+    cookie_header: str = Field(min_length=1, max_length=MAX_COOKIE_PAYLOAD_BYTES)
 
 
 def create_app(
@@ -311,71 +309,17 @@ def create_app(
             _set_csrf_cookie(response, csrf_token, resolved_settings.secure_cookies)
         return response
 
-    @app.post("/api/connectors/macos")
-    async def download_macos_connector(
+    @app.post("/api/linkedin/connect-cookie")
+    async def linkedin_connect_cookie_api(
+        body: CookieHeaderBody,
         user_id: str = Depends(csrf_protected),
-    ) -> Response:
-        try:
-            pairing = await run_in_threadpool(resolved_service.create_pairing, user_id)
-        except GateStoppedError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from None
-        except SessionAlreadyConnectedError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from None
-        payload = await run_in_threadpool(
-            build_connector_zip,
-            api_base=resolved_settings.public_base_url,
-            pairing_id=pairing.id,
-            pairing_token=pairing.token,
-            connector_commit=resolved_settings.commit_sha,
-        )
-        return Response(
-            content=payload,
-            media_type="application/zip",
-            headers={
-                "Content-Disposition": 'attachment; filename="LinkedIn-Connector.zip"',
-                "X-Pairing-ID": pairing.id,
-            },
-        )
-
-    @app.get("/api/pairings/{pairing_id}")
-    async def pairing_status_api(
-        pairing_id: str,
-        user_id: str = Depends(authenticated_user),
-    ) -> dict[str, Any]:
-        result = await run_in_threadpool(
-            resolved_service.pairing_status,
-            user_id,
-            pairing_id,
-        )
-        if result is None:
-            raise HTTPException(status_code=404, detail="Pairing not found.")
-        return result
-
-    @app.post("/api/pairings/{pairing_id}/complete")
-    async def complete_pairing_api(
-        pairing_id: str,
-        body: PairingCompleteBody,
-        request: Request,
-        authorization: Optional[str] = Header(default=None),
-        x_connector_commit: Optional[str] = Header(default=None),
-    ) -> dict[str, Any]:
-        if request.headers.get("origin") is not None:
-            raise HTTPException(status_code=403, detail="Browser origins are not accepted.")
-        if not x_connector_commit or not hmac.compare_digest(
-            x_connector_commit,
-            resolved_settings.commit_sha,
-        ):
-            raise HTTPException(status_code=409, detail="Connector build does not match the gate.")
-        raw_token = _bearer_token(authorization)
+    ) -> dict[str, bool]:
         try:
             return await run_in_threadpool(
-                resolved_service.complete_pairing,
-                pairing_id,
-                raw_token,
-                body.cookies,
+                resolved_service.connect_cookie_header,
+                user_id,
+                body.cookie_header,
             )
-        except PairingError as exc:
-            raise HTTPException(status_code=401, detail=str(exc)) from None
         except CookieJarError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
         except GateStoppedError as exc:
@@ -437,13 +381,7 @@ def _optional_user(
 def _request_body_limit(request: Request) -> Optional[int]:
     if request.method == "POST" and request.url.path in {"/login", "/logout"}:
         return 4_096
-    if request.method == "POST" and request.url.path == "/api/connectors/macos":
-        return 4_096
-    if (
-        request.method == "POST"
-        and request.url.path.startswith("/api/pairings/")
-        and request.url.path.endswith("/complete")
-    ):
+    if request.method == "POST" and request.url.path == "/api/linkedin/connect-cookie":
         return MAX_COOKIE_PAYLOAD_BYTES + 8_192
     return None
 
@@ -491,15 +429,6 @@ def _clear_auth_cookies(response: Response, secure: bool) -> None:
         samesite="lax",
         path="/",
     )
-
-
-def _bearer_token(value: Optional[str]) -> str:
-    if not value or not value.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Pairing authorization required.")
-    token = value[7:].strip()
-    if not token or len(token) > 256:
-        raise HTTPException(status_code=401, detail="Pairing authorization required.")
-    return token
 
 
 def _write_reproduction(output_dir: Path, deployment_id: str, commit_sha: str) -> None:

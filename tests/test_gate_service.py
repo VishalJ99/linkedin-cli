@@ -26,6 +26,7 @@ from linkedin_cli.gate_service import GateStoppedError
 from linkedin_cli.gate_service import PairingError
 from linkedin_cli.gate_service import SessionAlreadyConnectedError
 from linkedin_cli.gate_service import classify_diagnostics
+from linkedin_cli.gate_service import cookie_header_to_records
 from linkedin_cli.gate_service import normalize_linkedin_cookies
 from linkedin_cli.gate_settings import GateSettings
 from linkedin_cli.security import hash_pairing_token
@@ -97,6 +98,14 @@ def _cookies() -> list[dict[str, Any]]:
             "secure": True,
         },
     ]
+
+
+def _cookie_header(*, prefix: bool = False) -> str:
+    value = (
+        f"li_at={SECRET_LI_AT}; JSESSIONID={SECRET_JSESSION}; "
+        "lang=v=2&lang=en-us"
+    )
+    return f"Cookie: {value}" if prefix else value
 
 
 def _passed_diagnostics() -> dict[str, Any]:
@@ -231,7 +240,39 @@ def test_normalize_rejects_cookie_value_control_characters(forbidden: str) -> No
         normalize_linkedin_cookies(cookies)
 
 
-def test_complete_pairing_encrypts_at_rest_then_explicit_probe_uses_session(
+@pytest.mark.parametrize("prefix", [False, True])
+def test_cookie_header_parser_accepts_value_or_full_header(prefix: bool) -> None:
+    records = cookie_header_to_records(_cookie_header(prefix=prefix))
+
+    assert [record["name"] for record in records] == ["JSESSIONID", "lang", "li_at"]
+    assert next(record for record in records if record["name"] == "li_at")["value"] == (
+        SECRET_LI_AT
+    )
+    assert next(record for record in records if record["name"] == "JSESSIONID")["value"] == (
+        SECRET_JSESSION
+    )
+
+
+@pytest.mark.parametrize(
+    "raw_header",
+    [
+        "",
+        "li_at=secret",
+        "li_at=secret; broken; JSESSIONID=x",
+        "li_at=secret; li_at=other; JSESSIONID=x",
+        "li_at=secret\nJSESSIONID=x",
+        "li_at=; JSESSIONID=x",
+    ],
+)
+def test_cookie_header_parser_rejects_invalid_input_without_echo(raw_header: str) -> None:
+    with pytest.raises(CookieJarError) as exc_info:
+        cookie_header_to_records(raw_header)
+
+    assert "secret" not in str(exc_info.value)
+    assert "other" not in str(exc_info.value)
+
+
+def test_cookie_header_encrypts_at_rest_then_explicit_probe_uses_session(
     tmp_path: Path,
 ) -> None:
     captured: dict[str, Any] = {}
@@ -244,9 +285,8 @@ def test_complete_pairing_encrypts_at_rest_then_explicit_probe_uses_session(
         return _passed_diagnostics()
 
     service, database = _service(tmp_path, diagnostic_runner=runner)
-    pairing = service.create_pairing("friend")
 
-    result = service.complete_pairing(pairing.id, pairing.token, _cookies())
+    result = service.connect_cookie_header("friend", _cookie_header())
 
     assert result["connected"] is True
     assert result == {"connected": True, "probe_pending": True}
@@ -270,7 +310,7 @@ def test_complete_pairing_encrypts_at_rest_then_explicit_probe_uses_session(
         },
     }
     assert captured == {
-        "source": "mac-connector",
+        "source": "cookie-paste",
         "li_at": SECRET_LI_AT,
         "jsessionid": "ajax:DO-NOT-PERSIST-JSESSION",
         "proxy": None,
@@ -280,7 +320,6 @@ def test_complete_pairing_encrypts_at_rest_then_explicit_probe_uses_session(
     assert stored["cookie_names"] == ["JSESSIONID", "lang", "li_at"]
     assert SECRET_LI_AT.encode() not in stored["ciphertext"]
     assert SECRET_JSESSION.encode() not in stored["ciphertext"]
-    assert service.pairing_status("friend", pairing.id)["state"] == "completed"
     probes = database.list_auth_probes("friend")
     assert len(probes) == 1
     assert probes[0]["status"] == "passed"

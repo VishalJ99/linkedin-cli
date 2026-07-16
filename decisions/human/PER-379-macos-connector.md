@@ -2,7 +2,7 @@
 
 ## Status
 
-Approved by the user on 2026-07-14.
+Superseded by `PER-379-direct-cookie-paste.md` on 2026-07-17.
 
 ## Decision
 
@@ -47,4 +47,3 @@ distribution is justified.
 
 - Ticket: PER-379
 - Parent: PER-377
-

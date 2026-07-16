@@ -78,21 +78,32 @@
     <div class="two-column">
       <section class="card" aria-labelledby="connect-title">
         <p class="step-number" aria-hidden="true">1</p>
-        <h2 id="connect-title">Connect from your Mac</h2>
+        <h2 id="connect-title">Paste your LinkedIn Cookie header</h2>
         <p>
-          Download the one-time connector, extract the ZIP, and double-click
-          <strong>Connect LinkedIn.command</strong>. It opens a temporary Chrome profile where you
-          sign into LinkedIn, then transfers the session directly without displaying or copying it.
+          In LinkedIn, open Chrome DevTools → Network, reload, select a request to
+          <strong>www.linkedin.com</strong>, and copy the <strong>Cookie</strong> request-header value.
+          Paste only that value below.
         </p>
         <p class="supporting-text">
-          Requires Google Chrome and Python 3 on macOS. If macOS warns on first open, use
-          Control-click → Open. The connector and its login profile delete themselves after use;
-          the original ZIP remains in Downloads but its token expires after ten minutes.
+          Treat this like a password. It is sent only to this site, encrypted immediately, never
+          echoed, and cleared from this box when you submit it.
         </p>
+        <label class="field-label" for="linkedin-cookie-header">Cookie header</label>
+        <textarea
+          id="linkedin-cookie-header"
+          class="secret-input"
+          rows="5"
+          data-cookie-header
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          placeholder='li_at=...; JSESSIONID="ajax:..."; ...'
+          {% if gate_status.connected or gate_status.gate_state in ["passed", "rejected", "retry_exhausted"] %}disabled{% endif %}
+        ></textarea>
         <button
           class="button button-primary"
           type="button"
-          data-download-connector
+          data-connect-cookie
           {% if gate_status.connected or gate_status.gate_state in ["passed", "rejected", "retry_exhausted"] %}disabled{% endif %}
         >
           {% if gate_status.gate_state == "passed" %}
@@ -102,7 +113,7 @@
           {% elif gate_status.connected %}
             Session connected
           {% else %}
-            Download Mac connector
+            Connect and run first probe
           {% endif %}
         </button>
       </section>
@@ -111,9 +122,8 @@
         <p class="step-number" aria-hidden="true">2</p>
         <h2 id="probe-title">Run a read probe</h2>
         <p>
-          The first probe runs immediately after encrypted connection storage. Run later probes
-          only at the agreed checkpoints; each reads authentication status and the account owner’s
-          profile.
+          The first probe runs after encrypted connection storage. Run later probes only at the
+          agreed checkpoints; each reads authentication status and the account owner’s profile.
         </p>
         <button
           class="button button-secondary"
@@ -130,7 +140,7 @@
       <h2 id="privacy-title">Privacy controls</h2>
       <p>
         Disconnect deletes the encrypted LinkedIn cookie jar. Delete my data removes the user,
-        pairing history, encrypted session, and sanitized probe records from the live database.
+        encrypted session, and sanitized probe records from the live database.
         The non-personal stop marker remains so a rejected gate cannot be restarted by deleting
         evidence. This feasibility gate does not have a managed backup.
       </p>

@@ -9,8 +9,8 @@ The repository began as [`frizynn/linkedin-cli`](https://github.com/frizynn/link
 The conversation finder is currently stopped at its Railway authentication feasibility gate. Implemented in this gate:
 
 - Invite-passcode login with a seven-day secure application session
-- A downloadable, self-cleaning macOS connector that opens an isolated Chrome profile
-- Ten-minute, single-use, commit-bound connector pairing
+- An authenticated, CSRF-protected form for pasting a LinkedIn Cookie request header
+- Immediate validation and removal of the pasted value from the browser form
 - AES-256-GCM cookie encryption before SQLite persistence
 - Sanitized authentication/self-profile probe history
 - Railway Docker, volume, health, readiness, and reproduction contracts

@@ -57,7 +57,7 @@ class PairingError(ValueError):
 
 
 class CookieJarError(ValueError):
-    """Raised when a connector payload is not a safe LinkedIn cookie jar."""
+    """Raised when submitted data is not a safe LinkedIn cookie jar."""
 
 
 class SessionUnavailableError(RuntimeError):
@@ -84,7 +84,7 @@ class Pairing:
 
 
 class GateService:
-    """Coordinates pairing, encrypted persistence, and bounded live probes."""
+    """Coordinates encrypted persistence and bounded live probes."""
 
     def __init__(
         self,
@@ -166,20 +166,38 @@ class GateService:
                     "Disconnect the current LinkedIn session before starting a new pairing."
                 )
 
-            aad = self._aad(user_id)
-            envelope = self._cipher.encrypt(normalized, aad=aad)
-            self.database.save_linkedin_session(
-                user_id,
-                envelope.ciphertext.encode("ascii"),
-                envelope.nonce.encode("ascii"),
-                aad.encode("utf-8"),
-                [cookie["name"] for cookie in normalized],
-                expires_at=_cookie_expiry(normalized),
-            )
-            return {
-                "connected": True,
-                "probe_pending": True,
-            }
+            return self._save_encrypted_session(user_id, normalized)
+
+    def connect_cookie_header(self, user_id: str, raw_header: str) -> dict[str, Any]:
+        """Validate and encrypt a pasted Cookie request header."""
+        with self._operation_lock:
+            self._ensure_gate_open(user_id)
+            if self.database.get_active_linkedin_session(user_id) is not None:
+                raise SessionAlreadyConnectedError(
+                    "Disconnect the current LinkedIn session before connecting another."
+                )
+            normalized = cookie_header_to_records(raw_header)
+            return self._save_encrypted_session(user_id, normalized)
+
+    def _save_encrypted_session(
+        self,
+        user_id: str,
+        normalized: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        aad = self._aad(user_id)
+        envelope = self._cipher.encrypt(normalized, aad=aad)
+        self.database.save_linkedin_session(
+            user_id,
+            envelope.ciphertext.encode("ascii"),
+            envelope.nonce.encode("ascii"),
+            aad.encode("utf-8"),
+            [cookie["name"] for cookie in normalized],
+            expires_at=_cookie_expiry(normalized),
+        )
+        return {
+            "connected": True,
+            "probe_pending": True,
+        }
 
     def probe(self, user_id: str) -> dict[str, Any]:
         with self._operation_lock:
@@ -201,7 +219,7 @@ class GateService:
         cookies = self._cipher.decrypt(envelope, aad=row["aad"])
         session = auth_session_from_cookie_records(
             cookies,
-            source="mac-connector",
+            source="cookie-paste",
             proxy=None,
         )
         try:
@@ -405,6 +423,52 @@ def normalize_linkedin_cookies(
     if encoded_size > MAX_COOKIE_PAYLOAD_BYTES:
         raise CookieJarError("LinkedIn cookie payload is too large.")
     return sorted(normalized, key=lambda item: (item["name"], item["domain"], item["path"]))
+
+
+def cookie_header_to_records(raw_header: str) -> list[dict[str, Any]]:
+    """Parse a pasted Cookie request header into the minimized storage format."""
+    if not isinstance(raw_header, str):
+        raise CookieJarError("LinkedIn Cookie header must be text.")
+    if not raw_header.strip():
+        raise CookieJarError("LinkedIn Cookie header is empty.")
+    if len(raw_header.encode("utf-8")) > MAX_COOKIE_PAYLOAD_BYTES:
+        raise CookieJarError("LinkedIn Cookie header is too large.")
+    if any(character in raw_header for character in "\r\n\x00"):
+        raise CookieJarError("LinkedIn Cookie header contains invalid characters.")
+
+    header = raw_header.strip()
+    if header[:7].lower() == "cookie:":
+        header = header[7:].strip()
+
+    records: list[dict[str, Any]] = []
+    names: set[str] = set()
+    for segment in header.split(";"):
+        pair = segment.strip()
+        if not pair:
+            continue
+        if "=" not in pair:
+            raise CookieJarError("LinkedIn Cookie header contains a malformed pair.")
+        name, value = pair.split("=", 1)
+        name = name.strip()
+        value = value.strip()
+        if not _COOKIE_NAME.fullmatch(name):
+            raise CookieJarError("LinkedIn Cookie header contains an invalid name.")
+        if name in names:
+            raise CookieJarError("LinkedIn Cookie header contains a duplicate cookie.")
+        names.add(name)
+        if not value:
+            continue
+        records.append(
+            {
+                "name": name,
+                "value": value,
+                "domain": ".linkedin.com",
+                "path": "/",
+                "secure": True,
+                "httpOnly": name in _REQUIRED_COOKIE_NAMES,
+            }
+        )
+    return normalize_linkedin_cookies(records)
 
 
 def classify_diagnostics(diagnostics: dict[str, Any]) -> tuple[str, str]:

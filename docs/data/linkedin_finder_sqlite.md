@@ -8,7 +8,8 @@ PER-379 introduces the minimum tables needed to decide whether a consented brows
 
 - `schema_migrations`: applied application migrations.
 - `users`: the single invited application identity and revocable app-session generation.
-- `pairing_tokens`: hashed, single-use, ten-minute macOS connector handoffs.
+- `pairing_tokens`: inactive compatibility history from the superseded connector flow;
+  no public route creates or consumes these rows.
 - `linkedin_sessions`: AES-256-GCM ciphertext and non-secret validation metadata.
 - `auth_probes`: sanitized auth/profile outcomes tied to one encrypted-session ID,
   Railway deployment ID, exact Git commit, extractor version, and timestamp.
@@ -27,7 +28,7 @@ Cookie values must never appear in plaintext columns, logs, API responses, fixtu
 - strict tables
 - one application worker
 
-`Delete my data` removes the user row and cascades the pairing, encrypted
+`Delete my data` removes the user row and cascades any historical pairing, encrypted
 session, and probe records from the live database. It deliberately preserves
 the non-PII `feasibility_gate` stop tombstone so a rejected gate cannot be
 restarted by deleting the evidence. Logout rotates the user's session

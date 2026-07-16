@@ -21,7 +21,7 @@ the gate passes exactly as defined below.
   cookies, passcodes, keys, tokens, or their hashes.
 
 The Docker build installs the exact `uv.lock` resolution with `uv sync
---frozen`. Local `.env` files, databases, keys, and downloaded connector
+--frozen`. Local `.env` files, databases, keys, and stale credential-bearing
 packages are excluded from its build context and are not copied into the image.
 
 ## Railway resources
@@ -72,48 +72,37 @@ Do not configure `LINKEDIN_PROXY` for this service. The gate rejects that
 setting, and its HTTP transport ignores process-level proxy environment
 variables. A passing request must use Railway's own outbound network path.
 
-## Bind the macOS connector to the audited deployment
+## Bind Cookie submission to the audited deployment
 
-The website builds each connector ZIP in memory from the source running on
-Railway. It embeds the exact `PUBLIC_BASE_URL`, deployed `APP_COMMIT_SHA`, and a
-new hashed, single-use pairing credential that expires in ten minutes. The raw
-credential is present only in the HTTPS response and downloaded command; there
-is no JSON token-creation endpoint, persistent server-side bundle, browser
-extension, or separate client allow-list.
+The invite-protected website accepts a copied LinkedIn `Cookie` request-header
+value through one authenticated, CSRF-protected endpoint. The browser clears
+the textarea when submission starts. Railway validates the required cookies and
+AES-256-GCM encrypts them before SQLite persistence; it never echoes or logs the
+submitted value.
 
-Commit and push a clean revision, run the connector tests, and use that exact
-revision for `APP_COMMIT_SHA` and `railway up`:
+Commit and push a clean revision, run the security and web tests, and use that
+exact revision for `APP_COMMIT_SHA` and `railway up`:
 
 ```bash
-uv run pytest -q tests/test_mac_connector.py tests/test_web.py
+uv run pytest -q tests/test_gate_service.py tests/test_web.py
 node --check linkedin_cli/static/app.js
 git status --short
-git commit -am "Ship the audited macOS connector" -m "PER-379"
+git commit -am "Accept encrypted Cookie-header connections" -m "PER-379"
 git push
 export APP_COMMIT_SHA="$(git rev-parse HEAD)"
 railway variables --set "APP_COMMIT_SHA=$APP_COMMIT_SHA" --skip-deploys
 ```
 
-The friend logs into the invite-protected website, clicks **Download Mac
-connector**, extracts `LinkedIn-Connector.zip`, and opens **Connect
-LinkedIn.command**. The command requires Google Chrome and Python 3. It opens a
-new temporary Chrome profile; the friend signs into LinkedIn there and presses
-Return in Terminal only after LinkedIn has loaded. If macOS blocks the first
-open, use Control-click → **Open**. Do not weaken Gatekeeper globally.
+The friend logs into the invite-protected website and follows the on-page
+instructions: in an already authenticated LinkedIn tab, open Chrome DevTools →
+Network, reload, select a request to `www.linkedin.com`, copy the `Cookie`
+request-header value, paste it into the website, and click **Connect and run
+first probe**. Paste only into the verified Railway HTTPS origin and clear the
+clipboard after use because the header is an account credential.
 
-The connector reads only the applicable LinkedIn cookies through Chrome's
-loopback DevTools endpoint, posts them directly to the exact Railway origin
-without using proxy environment variables or redirects, and never displays or
-copies a cookie. It closes its owned Chrome process and deletes the temporary
-profile and extracted command on exit. The original ZIP remains in Downloads;
-delete it manually after use. Its embedded token becomes unusable after one
-successful transfer, after ten minutes, or when a newer connector is
-downloaded.
-
-The authenticated website polls only the non-secret pairing status. After
-encrypted storage succeeds, it starts the first probe exactly once. A failed
-automatic probe is not automatically retried; the UI enables the explicit
-manual probe action. A connector build from a different commit is rejected.
+After encrypted storage succeeds, the browser starts the first probe exactly
+once. A failed automatic probe is not automatically retried; the UI enables the
+explicit manual probe action. An intentional replacement requires Disconnect.
 
 ## Deploy and smoke-test
 
@@ -138,10 +127,10 @@ curl --fail --silent --show-error "$BASE_URL/readyz"
 
 Both requests must return a success status. Confirm in Railway that the service
 has one replica and the volume is mounted at `/app/data`. Log in through the
-website, perform the explicit downloaded-connector pairing, and confirm that
+website, perform the explicit Cookie-header connection, and confirm that
 the UI reports an encrypted LinkedIn session. Inspect application logs only for
-sanitized status records; cookie names may appear, but cookie values, pairing
-tokens, app sessions, passcodes, encryption keys, and database ciphertext must
+sanitized status records; cookie names may appear, but cookie values, app
+sessions, passcodes, encryption keys, and database ciphertext must
 not.
 
 Redeploy the same commit once and repeat `/readyz`. Railway's
@@ -195,7 +184,7 @@ cookie replay works. The application permits three failed attempts total, not
 three retries after an initial failure; the third failure permanently stops
 the gate. They never count as successful probes.
 
-`Delete my data` securely removes live user, pairing, session, and probe rows,
+`Delete my data` securely removes live user, historical pairing, session, and probe rows,
 but retains the non-PII stop tombstone. This gate has no Railway-managed backup;
 if backups are enabled later, they are outside the web application's reach and
 must be removed separately to honor a complete deletion request.
@@ -203,6 +192,6 @@ must be removed separately to honor a complete deletion request.
 Only after all three qualifying probes pass may the user explicitly authorize
 resuming the blocked tickets and the consented `20 / 5 / 2` collection test.
 The application persists `passed` as a terminal gate state and disables further
-pairing/probe requests. While proof is in progress, a connected session cannot
+connection/probe requests. While proof is in progress, a connected session cannot
 be silently replaced; an intentional restart requires Disconnect and loses the
 old session's qualifying progress.
