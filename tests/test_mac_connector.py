@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 from io import BytesIO
 import json
 from pathlib import Path
@@ -10,6 +12,7 @@ import pytest
 from linkedin_cli.mac_connector import CONNECTOR_FILENAME
 from linkedin_cli.mac_connector import build_connector_zip
 from linkedin_cli.mac_connector_runtime import ConnectorError
+from linkedin_cli.mac_connector_runtime import DevToolsWebSocket
 from linkedin_cli.mac_connector_runtime import build_chrome_arguments
 from linkedin_cli.mac_connector_runtime import normalize_cookie_records
 from linkedin_cli.mac_connector_runtime import read_linkedin_cookies
@@ -99,6 +102,54 @@ def test_connector_uses_an_isolated_profile_without_evasion_or_proxying(tmp_path
     assert "proxy" not in rendered
     assert "disable-blink-features" not in rendered
     assert "user-agent" not in rendered
+
+
+def test_chrome_websocket_accepts_the_chromium_101_reason_phrase(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nonce_bytes = b"n" * 16
+    nonce = base64.b64encode(nonce_bytes).decode("ascii")
+    accepted = base64.b64encode(
+        hashlib.sha1(
+            (nonce + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")
+        ).digest()
+    ).decode("ascii")
+    response = (
+        "HTTP/1.1 101 WebSocket Protocol Handshake\r\n"
+        "Upgrade: WebSocket\r\n"
+        "Connection: Upgrade\r\n"
+        f"Sec-WebSocket-Accept: {accepted}\r\n\r\n"
+    ).encode("ascii")
+
+    class Connection:
+        def __init__(self) -> None:
+            self.response = response
+            self.sent: list[bytes] = []
+            self.closed = False
+
+        def settimeout(self, _timeout: float) -> None:
+            pass
+
+        def sendall(self, payload: bytes) -> None:
+            self.sent.append(payload)
+
+        def recv(self, _length: int) -> bytes:
+            payload, self.response = self.response, b""
+            return payload
+
+        def close(self) -> None:
+            self.closed = True
+
+    connection = Connection()
+    monkeypatch.setattr(runtime.secrets, "token_bytes", lambda _length: nonce_bytes)
+    monkeypatch.setattr(runtime.socket, "create_connection", lambda *_args, **_kwargs: connection)
+
+    client = DevToolsWebSocket.connect("ws://127.0.0.1:9222/devtools/browser/fixture")
+
+    assert isinstance(client, DevToolsWebSocket)
+    assert connection.sent[0].startswith(b"GET /devtools/browser/fixture HTTP/1.1\r\n")
+    client.close()
+    assert connection.closed is True
 
 
 def test_cdp_cookie_normalization_keeps_only_linkedin_and_required_metadata() -> None:

@@ -226,8 +226,16 @@ class DevToolsWebSocket:
             for token in headers.get("connection", "").split(",")
             if token.strip()
         }
+        # Chromium uses both "Switching Protocols" and "WebSocket Protocol
+        # Handshake" as the non-semantic reason phrase across releases.
+        status_parts = status_line.split(" ", 2)
+        switching_protocols = (
+            len(status_parts) >= 2
+            and status_parts[0] == "HTTP/1.1"
+            and status_parts[1] == "101"
+        )
         if (
-            status_line != "HTTP/1.1 101 Switching Protocols"
+            not switching_protocols
             or headers.get("upgrade", "").lower() != "websocket"
             or "upgrade" not in connection_tokens
             or headers.get("sec-websocket-accept") != expected
